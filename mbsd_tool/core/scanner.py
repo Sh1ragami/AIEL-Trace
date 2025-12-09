@@ -925,9 +925,19 @@ def _active_checks(url: str, client: httpx.Client, mode: ScanMode, options: Scan
     return findings
 
 
-def _collect_params_from_html(base_url: str, html: str) -> Tuple[List[str], List[Dict[str, str]]]:
+def _get_element_selector(element: BeautifulSoup) -> str:
+    """要素から一意のCSSセレクタを生成する（id > name）"""
+    if element.get("id"):
+        return f'{element.name}#{element.get("id")}'
+    if element.get("name"):
+        return f'{element.name}[name="{element.get("name")}"]'
+    # フォールバックとして、単純なタグ名を返す（理想的ではない）
+    return element.name
+
+
+def _collect_params_from_html(base_url: str, html: str) -> Tuple[List[str], List[Tuple[BeautifulSoup, Dict[str, str]]]]:
     names: List[str] = []
-    forms: List[Dict[str, str]] = []
+    forms: List[Tuple[BeautifulSoup, Dict[str, str]]] = []
     try:
         soup = BeautifulSoup(html, "lxml")
         for form in soup.find_all("form"):
@@ -943,11 +953,11 @@ def _collect_params_from_html(base_url: str, html: str) -> Tuple[List[str], List
                     continue
                 inputs[n] = i.get("value") or ""
                 names.append(n)
-            forms.append({
+            forms.append((form, {
                 "action": urljoin(base_url, action),
                 "method": method,
                 "inputs": inputs,
-            })
+            }))
     except Exception:
         pass
     return list(dict.fromkeys(names)), forms
@@ -955,7 +965,7 @@ def _collect_params_from_html(base_url: str, html: str) -> Tuple[List[str], List
 
 def _xss_form_tests(url: str, html: str, client: httpx.Client, mode: ScanMode, options: ScanOptions) -> List[VulnerabilityFinding]:
     findings: List[VulnerabilityFinding] = []
-    names, forms = _collect_params_from_html(url, html)
+    names, forms_with_elements = _collect_params_from_html(url, html)
     # Candidate names (common fields) + discovered names
     candidates = list(dict.fromkeys([options.xss.param_name] + names + [
         "q", "s", "search", "query", "message", "comment", "name", "title" 
@@ -964,12 +974,12 @@ def _xss_form_tests(url: str, html: str, client: httpx.Client, mode: ScanMode, o
     tokens = [t.lower() for t in options.xss.success_tokens]
 
     # GET-only in Normal; include POST in Attack
-    for f in forms:
-        method = f.get("method", "get")
+    for form_element, f_data in forms_with_elements:
+        method = f_data.get("method", "get")
         if method == "post" and mode != ScanMode.ATTACK:
             continue
-        action = f.get("action", url)
-        inputs = dict(f.get("inputs", {}))
+        action = f_data.get("action", url)
+        inputs = dict(f_data.get("inputs", {}))
         hit = False
         for n in list(inputs.keys()):
             if n in candidates:
@@ -989,6 +999,7 @@ def _xss_form_tests(url: str, html: str, client: httpx.Client, mode: ScanMode, o
         if r.status_code < 400:
             body_lower = r.text.lower()
             if any(t in body_lower for t in tokens):
+                selector = _get_element_selector(form_element)
                 findings.append(
                     VulnerabilityFinding(
                         name="潜在的な反射型XSS",
@@ -1001,6 +1012,7 @@ def _xss_form_tests(url: str, html: str, client: httpx.Client, mode: ScanMode, o
                         ],
                         category="B XSS",
                         test_type="能動的",
+                        element_selector=selector,
                     )
                 )
                 break
@@ -1011,14 +1023,14 @@ def _sqli_form_tests(url: str, html: str, client: httpx.Client, mode: ScanMode, 
     findings: List[VulnerabilityFinding] = []
     if not options.sqli.enabled or mode != ScanMode.ATTACK:
         return findings
-    names, forms = _collect_params_from_html(url, html)
+    names, forms_with_elements = _collect_params_from_html(url, html)
     inj_val = options.sqli.injection_template
     base_val = options.sqli.baseline_value
     targets = [options.sqli.param_name] + names
-    for f in forms:
-        method = f.get("method", "get")
-        action = f.get("action", url)
-        inputs = dict(f.get("inputs", {}))
+    for form_element, f_data in forms_with_elements:
+        method = f_data.get("method", "get")
+        action = f_data.get("action", url)
+        inputs = dict(f_data.get("inputs", {}))
         if not inputs:
             continue
         base_inputs = inputs.copy()
@@ -1046,6 +1058,7 @@ def _sqli_form_tests(url: str, html: str, client: httpx.Client, mode: ScanMode, 
             large_change = len(r_base.text) > 0 and diff / max(1, len(r_base.text)) > 0.2
             error_sig = any(s in r_inj.text.lower() for s in (s.lower() for s in options.sqli.error_signatures))
             if large_change or error_sig:
+                selector = _get_element_selector(form_element)
                 findings.append(
                     VulnerabilityFinding(
                         name="SQLインジェクションの可能性",
@@ -1054,6 +1067,7 @@ def _sqli_form_tests(url: str, html: str, client: httpx.Client, mode: ScanMode, 
                         reproduction_steps=[f"{method.upper()} {action}", f"{chosen} に {inj_val} を投入"],
                         category="A SQLi",
                         test_type="能動的",
+                        element_selector=selector,
                     )
                 )
                 break
@@ -1167,6 +1181,121 @@ def _cmdi_tests(url: str, client: httpx.Client, mode: ScanMode, options: ScanOpt
     return findings
 
 
+def _csvi_form_tests(url: str, html: str, client: httpx.Client, mode: ScanMode, options: ScanOptions) -> List[VulnerabilityFinding]:
+    findings: List[VulnerabilityFinding] = []
+    if not options.csvi.enabled or mode != ScanMode.ATTACK: # CSViは攻撃モードでのみ実行
+        return findings
+
+    names, forms = _collect_params_from_html(url, html)
+    
+    for f in forms:
+        method = f.get("method", "get")
+        action = f.get("action", url)
+        base_inputs = dict(f.get("inputs", {}))
+        
+        for input_name in base_inputs.keys():
+            for payload in options.csvi.payloads:
+                test_inputs = base_inputs.copy()
+                test_inputs[input_name] = payload
+
+                try:
+                    if method == "post":
+                        r = client.post(action, data=test_inputs)
+                    else:
+                        r = client.get(action, params=test_inputs)
+                except Exception:
+                    continue
+
+                content_type = r.headers.get("content-type", "").lower()
+                content_disposition = r.headers.get("content-disposition", "").lower()
+
+                is_csv_response = "csv" in content_type or "excel" in content_type or "spreadsheet" in content_type
+                is_attachment = "attachment" in content_disposition
+
+                if r.status_code < 400 and (is_csv_response or is_attachment):
+                    evidence = f"パラメータ '{input_name}' にペイロードを挿入後、レスポンスの Content-Type が '{content_type}' になりました。"
+                    if is_attachment:
+                        evidence += f" Content-Disposition: {content_disposition}"
+
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="CSVインジェクションの可能性",
+                            severity="中",
+                            evidence=evidence,
+                            reproduction_steps=[
+                                f"{method.upper()} {action}",
+                                f"パラメータ '{input_name}' に '{payload}' を投入",
+                                "レスポンスヘッダや内容がCSV形式になることを確認",
+                            ],
+                            category="その他インジェクション",
+                            test_type="能動的",
+                        )
+                    )
+                    # 1つのフォームで1つ見つかれば十分
+                    return findings
+    return findings
+
+
+def _sqli_json_tests(url: str, client: httpx.Client, mode: ScanMode, options: ScanOptions) -> List[VulnerabilityFinding]:
+    findings: List[VulnerabilityFinding] = []
+    if not options.sqli.enabled or mode != ScanMode.ATTACK:
+        return findings
+
+    # Heuristic check if endpoint might accept JSON
+    try:
+        r_check = client.post(url, json={"test": "test"}, timeout=3)
+        if r_check.status_code >= 500 or r_check.status_code == 404:
+             return findings
+    except Exception:
+        return findings
+
+    p = options.sqli.param_name # Use the same param_name as a key
+    base_val = options.sqli.baseline_value
+    inj_val = options.sqli.injection_template
+    
+    try:
+        # Error/Boolean-based
+        r_base = client.post(url, json={p: base_val})
+        r_inj = client.post(url, json={p: inj_val})
+        if r_inj.status_code < 400:
+            diff = abs(len(r_inj.text) - len(r_base.text))
+            large_change = len(r_base.text) > 0 and diff / max(1, len(r_base.text)) > 0.2
+            error_sig = any(s in r_inj.text.lower() for s in (s.lower() for s in options.sqli.error_signatures))
+            if large_change or error_sig:
+                findings.append(VulnerabilityFinding(
+                    name="SQLインジェクションの可能性 (JSON)",
+                    severity="高" if error_sig else "中",
+                    evidence=f"JSONキー '{p}' への注入で応答差分またはエラー",
+                    reproduction_steps=[f"POST {url} with JSON body", f"キー '{p}' に '{inj_val}' を投入"],
+                    category="A SQLi", test_type="能動的"
+                ))
+                return findings # Found one, early exit
+    except Exception:
+        pass
+
+    # Time-based
+    try:
+        import time
+        time_payloads = ["1' AND SLEEP(5)-- ", "1 AND SLEEP(5)-- "]
+        for pay in time_payloads:
+            t0 = time.perf_counter()
+            r_time = client.post(url, json={p: pay})
+            dt = time.perf_counter() - t0
+            if r_time.status_code < 500 and dt > 4.0:
+                findings.append(VulnerabilityFinding(
+                    name="SQLインジェクションの可能性 (時間差, JSON)",
+                    severity="高",
+                    evidence=f"JSONキー '{p}' への注入で応答遅延 {dt:.2f}s",
+                    reproduction_steps=[f"POST {url} with JSON body", f"キー '{p}' に時間差攻撃ペイロードを投入"],
+                    category="A SQLi", test_type="能動的"
+                ))
+                return findings # Early exit
+    except Exception:
+        pass
+
+    return findings
+
+
 EXPOSURE_PROBES = [
     "/.git/HEAD",
     "/.git/config",
@@ -1209,267 +1338,281 @@ def scan_targets(
     cookies = httpx.Cookies()
     if auth and auth.login_url and auth.username and auth.password:
         cookies = try_login(lambda _: None, urls[0] if urls else "", auth)
-    client = httpx.Client(follow_redirects=True, timeout=8.0, cookies=cookies)
-    client_public = httpx.Client(follow_redirects=True, timeout=8.0)
-    alt_cookies = httpx.Cookies()
+
+    client = httpx.Client(follow_redirects=True, timeout=httpx.Timeout(10.0, read=20.0), cookies=cookies)
+    client_public = httpx.Client(follow_redirects=True, timeout=httpx.Timeout(10.0, read=20.0))
     client_alt: Optional[httpx.Client] = None
-    if alt_auth and alt_auth.login_url and alt_auth.username and alt_auth.password:
-        try:
-            alt_cookies = try_login(lambda _: None, urls[0] if urls else "", alt_auth)
-            client_alt = httpx.Client(follow_redirects=True, timeout=8.0, cookies=alt_cookies)
-        except Exception:
-            client_alt = None
-    settings = Settings.load()
-    logic = LogicAnalyzer(settings.ollama_base_url, settings.ollama_model)
-    # セッション固定化/未ローテーションの簡易確認
-    pre_cookie = None
-    if auth and auth.login_url:
-        try:
-            pre = client_public.get(auth.login_url)
-            for k, v in pre.cookies.items():
-                if any(s in k.lower() for s in ["sess", "phpsessid", "jsessionid"]):
-                    pre_cookie = (k, v)
-                    break
-        except Exception:
-            pass
-    # セッションIDの未ローテーション（簡易）
-    if pre_cookie is not None:
-        k, v = pre_cookie
-        try:
-            post_v = client.cookies.get(k)
-            if post_v and post_v == v:
-                urlv = auth.login_url or ""
-                # attach to first endpoint bucket
-                dest = endpoints[0] if endpoints else urlv
-                vulns[dest] = vulns.get(dest, [])
-                vulns[dest].append(
-                    VulnerabilityFinding(
-                        name="セッションID未ローテーションの可能性",
-                        severity="高",
-                        evidence=f"ログイン前後で {k} が同一",
-                        reproduction_steps=["ログイン前にCookieを取得", "ログイン後にCookieを比較"],
-                        category="K セッション/認証",
-                        test_type="能動的",
-                        explanation="認証成功後にセッションIDが再生成されず、セッション固定化のリスクがあります。",
-                        remediation="ログイン成功時にセッションIDを必ず再生成してください。"
-                    )
-                )
-        except Exception:
-            pass
-    for i, url in enumerate(endpoints, start=1):
-        try:
-            r = client.get(url)
-            vulns[url].extend(_passive_checks(url, r))
-            vulns[url].extend(_active_checks(url, client, mode, options or ScanOptions()))
-            vulns[url].extend(_cmdi_tests(url, client, mode, options or ScanOptions()))
-            # フォームベースのXSS/SQLiテスト
-            if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
-                html = r.text
-                vulns[url].extend(_xss_form_tests(url, html, client, mode, options or ScanOptions()))
-                vulns[url].extend(_sqli_form_tests(url, html, client, mode, options or ScanOptions()))
-                vulns[url].extend(_upload_form_tests(url, html, client, mode, options or ScanOptions()))
-            # 危険なHTTPメソッド（OPTIONSのAllowで確認）
+    agent_client: Optional[httpx.Client] = None
+
+    try:
+        if alt_auth and alt_auth.login_url and alt_auth.username and alt_auth.password:
             try:
-                ro = client.options(url)
-                allow = ro.headers.get("allow", "")
-                if any(m in allow for m in ["PUT", "DELETE", "PATCH", "PROPFIND", "MKCOL"]):
-                    vulns[url].append(
+                alt_cookies = try_login(lambda _: None, urls[0] if urls else "", alt_auth)
+                client_alt = httpx.Client(follow_redirects=True, timeout=httpx.Timeout(10.0, read=20.0), cookies=alt_cookies)
+            except Exception:
+                client_alt = None
+        
+        settings = Settings.load()
+        logic = LogicAnalyzer(settings.ollama_base_url, settings.ollama_model)
+        
+        pre_cookie = None
+        if auth and auth.login_url:
+            try:
+                pre = client_public.get(auth.login_url)
+                for k, v in pre.cookies.items():
+                    if any(s in k.lower() for s in ["sess", "phpsessid", "jsessionid"]):
+                        pre_cookie = (k, v)
+                        break
+            except Exception:
+                pass
+
+        if pre_cookie is not None:
+            k, v = pre_cookie
+            try:
+                post_v = client.cookies.get(k)
+                if post_v and post_v == v:
+                    urlv = auth.login_url or ""
+                    dest = endpoints[0] if endpoints else urlv
+                    vulns[dest] = vulns.get(dest, [])
+                    vulns[dest].append(
                         VulnerabilityFinding(
-                            name="危険なHTTPメソッド",
-                            severity="中",
-                            evidence=f"Allow: {allow}",
-                            reproduction_steps=["OPTIONSでAllowヘッダを確認"],
-                            category="I HTTPヘッダ",
+                            name="セッションID未ローテーションの可能性",
+                            severity="高",
+                            evidence=f"ログイン前後で {k} が同一",
+                            reproduction_steps=["ログイン前にCookieを取得", "ログイン後にCookieを比較"],
+                            category="K セッション/認証",
                             test_type="能動的",
+                            explanation="認証成功後にセッションIDが再生成されず、セッション固定化のリスクがあります。",
+                            remediation="ログイン成功時にセッションIDを必ず再生成してください。"
                         )
                     )
             except Exception:
                 pass
 
-            # 価格改変などのロジック検査（観測ベース、GETのみ）
-            if options and options.business.enabled and r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
-                html = r.text
-                suggestions = logic.suggest_tests(html, max_suggestions=options.business.max_suggestions)
-                for s in suggestions:
-                    pname = s.get("param")
-                    val = s.get("suggested_value", "1")
-                    if not pname:
-                        continue
-                    try:
-                        r2 = client.get(url, params={pname: val})
-                    except Exception:
-                        continue
-                    if r2.status_code < 400:
-                        # 単純比較: 金額らしき数字/通貨が変化したか
-                        import re
-                        pat = re.compile(r"([¥$]\s?\d+[\d,]*|\d+[\d,]*\s?(?:円|yen|usd))", re.IGNORECASE)
-                        nums1 = set(pat.findall(html))
-                        nums2 = set(pat.findall(r2.text))
-                        if nums1 != nums2:
-                            vulns[url].append(
-                                VulnerabilityFinding(
-                                    name="価格改変の可能性（ロジック）",
-                                    severity="中",
-                                    evidence=f"パラメータ {pname} を {val} にした際に表示金額が変化",
-                                    reproduction_steps=[f"GET {url}?{pname}={val}", "価格表示の差分を確認"],
-                                    category="ロジック",
-                                    test_type="能動的",
-                                    notes=s.get("reason", ""),
-                                )
-                            )
-            # 認可制御の不備（簡易）: /admin 等が未認証でも同等に閲覧可能
-            path_lower = urlparse(url).path.lower()
-            if auth and any(k in path_lower for k in ["/admin", "/manage", "/dashboard"]):
-                try:
-                    r_pub = client_public.get(url)
-                    if r_pub.status_code == 200 and r.status_code == 200 and len(r_pub.text) == len(r.text):
-                        vulns[url].append(
-                            VulnerabilityFinding(
-                                name="認可制御の不備の可能性",
-                                severity="高",
-                                evidence="未認証と認証済みの応答が同等",
-                                reproduction_steps=[
-                                    f"未認証で GET {url}",
-                                    f"認証後に GET {url}",
-                                    "応答差異がないことを確認",
-                                ],
-                                category="L 認可制御の不備",
-                                test_type="能動的",
-                            )
-                        )
-                except Exception:
-                    pass
-            # 低権限で管理ページが閲覧できる可能性（比較アカウント）
-            if client_alt is not None and any(k in path_lower for k in ["/admin", "/manage", "/dashboard"]):
-                try:
-                    r_low = r
-                    r_high = client_alt.get(url)
-                    if r_low.status_code == 200 and r_high.status_code == 200:
-                        vulns[url].append(
-                            VulnerabilityFinding(
-                                name="低権限で管理ページ閲覧の可能性",
-                                severity="高",
-                                evidence="一般アカウントでも200で閲覧可能",
-                                reproduction_steps=["一般と管理アカウントで同URLを取得し差異を確認"],
-                                category="L 認可制御の不備",
-                                test_type="能動的",
-                            )
-                        )
-                except Exception:
-                    pass
-            # LLM所見（受動的）: HTMLから潜在的な問題の候補を抽出
+        for i, url in enumerate(endpoints, start=1):
+            progress(f"スキャン中 ({i}/{len(endpoints)}): {url}")
             try:
+                r = client.get(url)
+                
+                progress(f"スキャン中: {url} - パッシブチェック")
+                vulns[url].extend(_passive_checks(url, r))
+                
+                progress(f"スキャン中: {url} - アクティブチェック")
+                vulns[url].extend(_active_checks(url, client, mode, options or ScanOptions()))
+                
+                progress(f"スキャン中: {url} - OSコマンドインジェクション")
+                vulns[url].extend(_cmdi_tests(url, client, mode, options or ScanOptions()))
+                
+                progress(f"スキャン中: {url} - JSONベースSQLi")
+                vulns[url].extend(_sqli_json_tests(url, client, mode, options or ScanOptions()))
+
                 if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
                     html = r.text
-                    notes = logic.assess_vulnerabilities(html, url, max_items=3)
-                    for it in notes:
-                        vulns[url].append(
-                            VulnerabilityFinding(
-                                name=it.get("name", "LLM所見"),
-                                severity=it.get("severity", "中"),
-                                evidence=it.get("reason", ""),
-                                reproduction_steps=["HTMLレビュー/静的所見（AI）"],
-                                category=it.get("category", "LLM所見"),
-                                test_type="受動的",
-                            )
-                        )
-            except Exception:
-                pass
-            # IDORの可能性（GETの数値idパラメータ）
-            try:
-                parsed = urlparse(url)
-                if parsed.query and "id=" in parsed.query:
-                    from urllib.parse import parse_qs, urlencode
-                    qs = parse_qs(parsed.query)
-                    if "id" in qs:
-                        cur = qs["id"][0]
-                        if cur.isdigit():
-                            test_id = str(int(cur) + 1)
-                            qs2 = dict(qs)
-                            qs2["id"] = [test_id]
-                            newq = urlencode({k: v[0] for k, v in qs2.items()})
-                            u2 = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{newq}"
-                            r_id = client.get(u2)
-                            if r_id.status_code == 200 and len(r_id.text) != len(r.text):
-                                vulns[url].append(
-                                    VulnerabilityFinding(
-                                        name="IDORの可能性（直接オブジェクト参照）",
-                                        severity="高",
-                                        evidence=f"id={cur} と id={test_id} で応答に有意な差",
-                                        reproduction_steps=[f"GET {url}", f"GET {u2}", "差分を比較"],
-                                        category="L 認可制御の不備",
-                                        test_type="能動的",
-                                    )
-                                )
-            except Exception:
-                pass
-        except Exception as e:
-            vulns[url].append(
-                VulnerabilityFinding(
-                    name="リクエストエラー",
-                    severity="情報",
-                    evidence=str(e),
-                    reproduction_steps=[f"GET {url}", "ネットワークエラー発生"],
-                    category="その他",
-                    test_type="受動的",
+                    progress(f"スキャン中: {url} - フォーム解析")
+                    vulns[url].extend(_xss_form_tests(url, html, client, mode, options or ScanOptions()))
+                    vulns[url].extend(_sqli_form_tests(url, html, client, mode, options or ScanOptions()))
+                    vulns[url].extend(_upload_form_tests(url, html, client, mode, options or ScanOptions()))
+                    vulns[url].extend(_csvi_form_tests(url, html, client, mode, options or ScanOptions()))
+
+                if options and options.business.enabled and r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
+                    progress(f"スキャン中: {url} - ビジネスロジック")
+                    html = r.text
+                    suggestions = logic.suggest_tests(html, max_suggestions=options.business.max_suggestions)
+                    for s in suggestions:
+                        pname = s.get("param")
+                        val = s.get("suggested_value", "1")
+                        if not pname: continue
+                        try:
+                            r2 = client.get(url, params={pname: val})
+                            if r2.status_code < 400:
+                                import re
+                                pat = re.compile(r"([¥$]\s?\d+[\d,]*|\d+[\d,]*\s?(?:円|yen|usd))", re.IGNORECASE)
+                                nums1 = set(pat.findall(html))
+                                nums2 = set(pat.findall(r2.text))
+                                if nums1 != nums2:
+                                    vulns[url].append(VulnerabilityFinding(name="価格改変の可能性（ロジック）", severity="中", evidence=f"パラメータ {pname} を {val} にした際に表示金額が変化", reproduction_steps=[f"GET {url}?{pname}={val}", "価格表示の差分を確認"], category="ロジック", test_type="能動的", notes=s.get("reason", "")))
+                        except Exception:
+                            continue
+
+                path_lower = urlparse(url).path.lower()
+                if auth and any(k in path_lower for k in ["/admin", "/manage", "/dashboard"]):
+                    progress(f"スキャン中: {url} - 認可制御 (未認証アクセス)")
+                    try:
+                        r_pub = client_public.get(url)
+                        if r_pub.status_code == 200 and r.status_code == 200 and len(r_pub.text) == len(r.text):
+                            vulns[url].append(VulnerabilityFinding(name="認可制御の不備の可能性", severity="高", evidence="未認証と認証済みの応答が同等", reproduction_steps=[f"未認証で GET {url}", f"認証後に GET {url}", "応答差異がないことを確認"], category="L 認可制御の不備", test_type="能動的"))
+                    except Exception:
+                        pass
+
+                if client_alt is not None and any(k in path_lower for k in ["/admin", "/manage", "/dashboard"]):
+                    progress(f"スキャン中: {url} - 認可制御 (権限昇格)")
+                    try:
+                        r_low = r
+                        r_high = client_alt.get(url)
+                        if r_low.status_code == 200 and r_high.status_code == 200:
+                             vulns[url].append(VulnerabilityFinding(name="低権限で管理ページ閲覧の可能性", severity="高", evidence="一般アカウントでも200で閲覧可能", reproduction_steps=["一般と管理アカウントで同URLを取得し差異を確認"], category="L 認可制御の不備", test_type="能動的"))
+                    except Exception:
+                        pass
+                
+                progress(f"スキャン中: {url} - LLM所見")
+                try:
+                    if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
+                        html = r.text
+                        notes = logic.assess_vulnerabilities(html, url, max_items=3)
+                        for it in notes:
+                            vulns[url].append(VulnerabilityFinding(name=it.get("name", "LLM所見"), severity=it.get("severity", "中"), evidence=it.get("reason", ""), reproduction_steps=["HTMLレビュー/静的所見（AI）"], category=it.get("category", "LLM所見"), test_type="受動的"))
+                except Exception:
+                    pass
+
+                progress(f"スキャン中: {url} - IDOR")
+                try:
+                    parsed = urlparse(url)
+                    if parsed.query and "id=" in parsed.query:
+                        from urllib.parse import parse_qs, urlencode
+                        qs = parse_qs(parsed.query)
+                        if "id" in qs:
+                            cur = qs["id"][0]
+                            if cur.isdigit():
+                                test_id = str(int(cur) + 1)
+                                qs2 = dict(qs)
+                                qs2["id"] = [test_id]
+                                newq = urlencode({k: v[0] for k, v in qs2.items()})
+                                u2 = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{newq}"
+                                r_id = client.get(u2)
+                                if r_id.status_code == 200 and len(r_id.text) != len(r.text):
+                                    vulns[url].append(VulnerabilityFinding(name="IDORの可能性（直接オブジェクト参照）", severity="高", evidence=f"id={cur} と id={test_id} で応答に有意な差", reproduction_steps=[f"GET {url}", f"GET {u2}", "差分を比較"], category="L 認可制御の不備", test_type="能動的"))
+                except Exception:
+                    pass
+
+            except Exception as e:
+                vulns[url].append(
+                    VulnerabilityFinding(
+                        name="リクエストエラー",
+                        severity="情報",
+                        evidence=str(e),
+                        reproduction_steps=[f"GET {url}", "ネットワークエラー発生"],
+                        category="その他",
+                        test_type="受動的",
+                    )
                 )
-            )
-        progress(f"スキャン中… {i}/{len(endpoints)}")
-    client.close()
-    client_public.close()
-    if client_alt is not None:
-        client_alt.close()
-    # 集約所見: 認可処理の有無/適用範囲、HTTPS適用範囲
-    try:
-        has_authz = any(
-            any((v.severity in ("高", "中", "低", "情報")) and (v.category or "").startswith("L ") or (v.name and "認可" in v.name)
-                for v in vulns.get(u, []))
-            for u in endpoints
-        )
-        # 401/403の存在で簡易判定
-        # ここではリクエスト結果のステータスを追っていないため、既存所見から推測に留める
-        summary_endpoint = endpoints[0] if endpoints else ""
-        if summary_endpoint:
-            vulns[summary_endpoint] = vulns.get(summary_endpoint, [])
-            vulns[summary_endpoint].append(
-                VulnerabilityFinding(
-                    name="認可処理の有無/認可方法（簡易）",
-                    severity="情報",
-                    explanation="検出所見から認可関連の兆候を集約。保護すべきURLに401/403/認可チェックが無い場合、適用漏れの可能性。",
-                    category="認可",
-                    test_type="受動的",
+        
+        progress("スキャン中: 追加のファイル露出チェック")
+        if endpoints:
+            origin = endpoints[0]
+            o = urlparse(origin)
+            base_origin = f"{o.scheme}://{o.netloc}/"
+            client2 = httpx.Client(follow_redirects=True, timeout=8.0, cookies=cookies)
+            extra = _exposure_sweep(base_origin, client2)
+            client2.close()
+            for u, fs in extra.items():
+                if u not in vulns:
+                    vulns[u] = []
+                    endpoints.append(u)
+                vulns[u].extend(fs)
+        
+        progress("スキャン中: エージェントシナリオ")
+        if endpoints and options and options.deep_scan:
+            origin = endpoints[0]
+            o = urlparse(origin)
+            base_origin = f"{o.scheme}://{o.netloc}/"
+            agent_client = httpx.Client(follow_redirects=True, timeout=8.0, cookies=cookies)
+            agent_findings = _run_agentic_scenario_tests(progress, base_origin, agent_client, mode, options, auth)
+            if agent_findings:
+                vulns[endpoints[0]].extend(agent_findings)
+
+        try:
+            summary_endpoint = endpoints[0] if endpoints else ""
+            if summary_endpoint:
+                vulns[summary_endpoint] = vulns.get(summary_endpoint, [])
+                http_count = sum(1 for u in endpoints if u.startswith("http://"))
+                https_count = sum(1 for u in endpoints if u.startswith("https://"))
+                vulns[summary_endpoint].append(
+                    VulnerabilityFinding(
+                        name="HTTPSの適用範囲（簡易）",
+                        severity="情報",
+                        explanation=f"HTTPS: {https_count} / HTTP: {http_count}",
+                        category="通信",
+                        test_type="受動的",
+                    )
                 )
-            )
-            # HTTPS適用範囲（http/https の混在有無）
-            http_count = sum(1 for u in endpoints if u.startswith("http://"))
-            https_count = sum(1 for u in endpoints if u.startswith("https://"))
-            vulns[summary_endpoint].append(
-                VulnerabilityFinding(
-                    name="HTTPSの適用範囲（簡易）",
-                    severity="情報",
-                    explanation=f"HTTPS: {https_count} / HTTP: {http_count}",
-                    category="通信",
-                    test_type="受動的",
-                )
-            )
-    except Exception:
-        pass
-    # Additional exposure sweep on site root
-    if endpoints:
-        origin = endpoints[0]
-        o = urlparse(origin)
-        base_origin = f"{o.scheme}://{o.netloc}/"
-        client2 = httpx.Client(follow_redirects=True, timeout=8.0, cookies=cookies)
-        extra = _exposure_sweep(base_origin, client2)
-        client2.close()
-        for u, fs in extra.items():
-            if u not in vulns:
-                vulns[u] = []
-                endpoints.append(u)
-            vulns[u].extend(fs)
-    # Use the origin of first URL as target label
+        except Exception:
+            pass
+
+    finally:
+        client.close()
+        client_public.close()
+        if client_alt is not None:
+            client_alt.close()
+        if agent_client is not None:
+            agent_client.close()
+
     target = endpoints[0] if endpoints else ""
     return ScanResult(target=target, mode=mode, endpoints=endpoints, vulns_by_endpoint=vulns)
+
+
+def _run_agentic_scenario_tests(progress: Callable[[object], None], base_url: str, client: httpx.Client, mode: ScanMode, options: ScanOptions, auth: AuthConfig | None) -> List[VulnerabilityFinding]:
+    findings: List[VulnerabilityFinding] = []
+    if not options.deep_scan or mode != ScanMode.ATTACK:
+        return findings
+
+    from mbsd_tool.core.agent import AgentClient
+    settings = Settings.load()
+    agent = AgentClient(settings.ollama_base_url, settings.ollama_model)
+
+    scenarios = [
+        {
+            "name": "認可制御の不備 (管理者ページへのアクセス)",
+            "goal": f"First, log in using the provided credentials if any. Then, try to navigate to likely admin pages like '{base_url.rstrip('/')}/admin', '{base_url.rstrip('/')}/dashboard', or '{base_url.rstrip('/')}/manage'. If you can access a page that seems to be for administrators, finish with success.",
+            "category": "L 認可制御の不備",
+        },
+        {
+            "name": "ビジネスロジックの欠陥 (購入フロー)",
+            "goal": "Explore the site to find a product. Add it to the cart. Then, in the cart, try to change the quantity to a negative number (-1) or a very large number (9999). If the application seems to accept it (e.g., no error message, or the total price becomes negative), finish with success.",
+            "category": "ロジック",
+        }
+    ]
+
+    for scenario_idx, scenario in enumerate(scenarios):
+        agent.history = []
+        agent.memory = {}
+        
+        try:
+            initial_response = client.get(base_url)
+            html = initial_response.text
+        except Exception:
+            progress(f"エージェントシナリオ ({scenario['name']}): 初期URLアクセス失敗")
+            continue 
+
+        max_steps = 10
+        for i in range(max_steps):
+            progress(f"エージェントシナリオ ({scenario['name']}) 実行中… ステップ {i+1}/{max_steps}")
+            response_obj = agent.execute_step(scenario["goal"], html)
+            action = response_obj.get("action", {})
+            
+            # This is a simulation. In a real tool, the GUI would execute the
+            # action in a browser and provide the new HTML. We just log the plan.
+            # print(f"[Agent Scenario: {scenario['name']}] Step {i+1}: {response_obj.get('thought')} -> Action: {action}")
+
+            if action.get("type") == "finish":
+                if action.get("success"):
+                    findings.append(VulnerabilityFinding(
+                        name=scenario["name"],
+                        severity="高",
+                        evidence=f"エージェントが脆弱性を検出しました: {action.get('message')}",
+                        reproduction_steps=[f"思考: {step.get('thought')}, アクション: {step.get('action')}" for step in agent.history],
+                        category=scenario["category"],
+                        test_type="能動的 (エージェント)",
+                    ))
+                progress(f"エージェントシナリオ ({scenario['name']}): {action.get('message')}")
+                break
+            
+            # Simulate HTML not changing as we don't have a live browser here.
+            html = html 
+        
+        if len(findings) > 0 and findings[-1].name == scenario["name"]: # If vulnerability found for current scenario, stop
+            break # Exit outer loop if a vulnerability is found in any scenario
+
+    return findings
 
 
 def scan_targets_worker(urls: List[str], mode: ScanMode, auth: Optional[AuthConfig] = None, alt_auth: Optional[AuthConfig] = None, options: Optional[ScanOptions] = None) -> FunctionWorker[ScanResult]:

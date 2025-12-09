@@ -316,6 +316,8 @@ def enumerate_paths(
             if "text/html" not in ct:
                 continue
             for link in _gather_links_and_hidden(url, r.text):
+                if link.endswith("?"):
+                    link = link[:-1]
                 if _same_origin(link, base) and link not in visited:
                     frontier.append((link, depth + 1, tag))
             # Parse external JS files (same-origin) for URL-like strings

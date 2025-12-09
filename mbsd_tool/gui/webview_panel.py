@@ -102,6 +102,8 @@ class AgentBrowserPanel(QWidget):
         self._target_origin: str | None = None
         # Install sink hooks for DOM-based XSS observation
         self._install_sink_hooks()
+        self._selector_to_highlight: Optional[str] = None
+        self.web.loadFinished.connect(self._on_load_finished)
 
     def _wrap_resize(self, original):
         def handler(event):
@@ -122,6 +124,42 @@ class AgentBrowserPanel(QWidget):
             self._target_origin = f"{u.scheme()}://{u.host()}:{u.port()}" if u.port() != -1 else f"{u.scheme()}://{u.host()}"
         except Exception:
             pass
+
+    def load_and_highlight(self, url: str, selector: str) -> None:
+        """指定されたURLをロードし、ロード完了後に指定された要素をハイライトする"""
+        self._selector_to_highlight = selector
+        self.load_url(url)
+        self.timer.stop() # 自動操縦タイマーを停止する
+
+    def _on_load_finished(self, ok: bool) -> None:
+        """ページのロード完了後にハイライト処理を実行する"""
+        if not ok or not self._selector_to_highlight:
+            return
+
+        selector = self._selector_to_highlight.replace("'", "\\'")
+        
+        js_code = f"""
+        (function() {{
+            // 以前のハイライトを削除
+            var highlighted = document.querySelector('.mbsd-highlighted');
+            if (highlighted) {{
+                highlighted.style.border = '';
+                highlighted.style.outline = '';
+                highlighted.classList.remove('mbsd-highlighted');
+            }}
+
+            var element = document.querySelector('{selector}');
+            if (element) {{
+                element.style.border = '3px solid red';
+                element.style.outline = '2px solid rgba(255, 0, 0, 0.6)';
+                element.classList.add('mbsd-highlighted');
+                element.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+            }}
+        }})();
+        """
+        self.web.page().runJavaScript(js_code)
+        # ハイライト後にセレクタをクリア
+        self._selector_to_highlight = None
 
     
 

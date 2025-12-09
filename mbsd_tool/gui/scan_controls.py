@@ -172,6 +172,12 @@ class ScanControls(QWidget):
         up_form = QFormLayout()
         up_form.addRow(self.upload_enable)
 
+        # CSV Injection
+        self.csvi_enable = QCheckBox("CSVインジェクション検査を有効化")
+        self.csvi_enable.setChecked(True)
+        csvi_form = QFormLayout()
+        csvi_form.addRow(self.csvi_enable)
+
         opts_box = QGroupBox("スキャンオプション")
         opts_layout = QVBoxLayout()
         opts_layout.addLayout(xss_form)
@@ -179,6 +185,7 @@ class ScanControls(QWidget):
         opts_layout.addLayout(trav_form)
         opts_layout.addLayout(cmdi_form)
         opts_layout.addLayout(up_form)
+        opts_layout.addLayout(csvi_form)
         opts_box.setLayout(opts_layout)
 
         # 上部に大きめボタンで配置（最上段に）
@@ -540,4 +547,6 @@ class ScanControls(QWidget):
         if self.trav_payload.text().strip():
             opts.traversal.payload = self.trav_payload.text().strip()
         opts.cmdi.enabled = self.cmdi_enable.isChecked()
+        opts.csvi.enabled = self.csvi_enable.isChecked()
+        opts.deep_scan = self.deep_scan_checkbox.isChecked()
         return opts

@@ -15,7 +15,7 @@ from PySide6.QtGui import QAction
 from mbsd_tool.gui.scan_controls import ScanControls
 from mbsd_tool.gui.webview_panel import AgentBrowserPanel
 from mbsd_tool.gui.results_panel import ResultsPanel
-from mbsd_tool.core.models import ScanResult
+from mbsd_tool.core.models import ScanResult, VulnerabilityFinding
 
 
 class MainWindow(QMainWindow):
@@ -40,6 +40,7 @@ class MainWindow(QMainWindow):
             lambda cfg, share: self.agent_browser.set_auth_config(cfg, share)
         )
         self.scan_controls.deep_scan_requested.connect(self.agent_browser.start_deep_scan)
+        self.results_panel.finding_selected.connect(self._on_finding_selected)
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -87,10 +88,26 @@ class MainWindow(QMainWindow):
         # Start polling for deep-scan results merged from agent browser
         self._poll_id = self.startTimer(1000)
 
+    def _on_finding_selected(self, endpoint: str, finding: VulnerabilityFinding) -> None:
+        """結果パネルで脆弱性が選択された際にWebViewを更新し、要素をハイライトする"""
+        self.agent_dock.setVisible(True)
+        
+        selector = getattr(finding, 'element_selector', None)
+        if selector:
+            # The webview panel needs a method to handle this
+            if hasattr(self.agent_browser, "load_and_highlight"):
+                self.agent_browser.load_and_highlight(endpoint, selector)
+            else:
+                # Fallback if method not yet implemented
+                self.agent_browser.load_url(endpoint)
+        else:
+            self.agent_browser.load_url(endpoint)
+
     def _on_scan_completed(self, result: ScanResult) -> None:
         self._last_scan_result = result
         self.results_panel.update_results(result)
         self.tabs.setCurrentWidget(self.results_panel)
+
 
     def _on_tab_changed(self, index: int) -> None:
         current = self.tabs.widget(index)
