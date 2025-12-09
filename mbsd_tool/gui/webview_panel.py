@@ -123,6 +123,8 @@ class AgentBrowserPanel(QWidget):
         except Exception:
             pass
 
+    
+
     def _tick(self) -> None:
         # Fetch DOM snapshot and ask the agent for the next action.
         def _on_html(html: str) -> None:

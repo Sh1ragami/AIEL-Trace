@@ -47,7 +47,7 @@ class XSSOptions(BaseModel):
 
 
 class SQLIOptions(BaseModel):
-    enabled: bool = False
+    enabled: bool = True
     param_name: str = "id"
     baseline_value: str = "1"
     injection_template: str = "1 OR 1=1"

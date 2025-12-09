@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import List, Set, Callable, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -44,6 +45,28 @@ DEFAULT_WORDLIST = [
     ".env",
     "backup",
     "old",
+    # Additional common app paths
+    "home",
+    "about",
+    "contact",
+    "dashboard",
+    "profile",
+    "account",
+    "settings",
+    "help",
+    "docs",
+    "search",
+    "feed",
+    "sitemap",
+    "robots.txt",
+    # Download/preview endpoints
+    "download",
+    "preview",
+    "view",
+    "file",
+    "image",
+    "export",
+    "report",
 ]
 
 # Additional sensitive/admin candidates and common exposures
@@ -73,6 +96,10 @@ ADMIN_CANDIDATES = [
     "grafana",
     "kibana",
     "prometheus",
+    "superuser",
+    "root",
+    "system",
+    "secrets",
 ]
 
 EXPOSED_FILES = [
@@ -222,18 +249,35 @@ def enumerate_paths(
         for c in (client_auth, client_public):
             try:
                 r = c.get(url)
-                if r.status_code < 400:
+                # treat 2xx/3xx and 401/403 as existing endpoints
+                if (r.status_code < 400) or (r.status_code in (401, 403)):
                     return True
+                # fallback to HEAD (some endpoints reject GET)
+                try:
+                    rh = c.head(url)
+                    if (rh.status_code < 400) or (rh.status_code in (401, 403)):
+                        return True
+                except Exception:
+                    pass
             except Exception:
                 continue
         return False
 
-    # 1) Dictionary enumeration (non-destructive GET)
-    for word in DEFAULT_WORDLIST + ADMIN_CANDIDATES + EXPOSED_FILES:
-        url = urljoin(base, word)
-        if _first_ok(url):
-            discovered.add(url)
-            progress(len(discovered))
+    # 1) Dictionary enumeration (non-destructive GET) with modest concurrency
+    words = DEFAULT_WORDLIST + ADMIN_CANDIDATES + EXPOSED_FILES
+    def _check_word(word: str) -> Optional[str]:
+        u = urljoin(base, word)
+        return u if _first_ok(u) else None
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures = [ex.submit(_check_word, w) for w in words]
+        for fut in as_completed(futures):
+            try:
+                u = fut.result()
+                if u and u not in discovered and _same_origin(u, base):
+                    discovered.add(u)
+                    progress(len(discovered))
+            except Exception:
+                continue
 
     # 1.5) robots.txt & sitemap.xml hints
     for hint in _fetch_robots_candidates(base, client_auth) + _fetch_sitemap_candidates(base, client_auth):
@@ -249,6 +293,8 @@ def enumerate_paths(
         frontier = [(base, 0, 'auth'), (base, 0, 'public')]
         visited_auth: Set[str] = set()
         visited_public: Set[str] = set()
+        js_fetched = 0
+        js_fetch_limit = 25
         while frontier and (len(visited_auth) + len(visited_public)) < max_pages:
             url, depth, tag = frontier.pop(0)
             visited = visited_auth if tag == 'auth' else visited_public
@@ -272,6 +318,31 @@ def enumerate_paths(
             for link in _gather_links_and_hidden(url, r.text):
                 if _same_origin(link, base) and link not in visited:
                     frontier.append((link, depth + 1, tag))
+            # Parse external JS files (same-origin) for URL-like strings
+            try:
+                soup = BeautifulSoup(r.text, "lxml")
+                for s in soup.find_all("script"):
+                    src = s.get("src")
+                    if not src:
+                        continue
+                    jsu = urljoin(url, src)
+                    if not _same_origin(jsu, base):
+                        continue
+                    if not jsu.lower().endswith(".js"):
+                        continue
+                    if js_fetched >= js_fetch_limit:
+                        break
+                    try:
+                        rjs = client.get(jsu)
+                        if rjs.status_code < 400 and "javascript" in rjs.headers.get("content-type", ""):
+                            js_fetched += 1
+                            for u2 in _extract_url_like(url, rjs.text):
+                                if _same_origin(u2, base) and u2 not in visited:
+                                    frontier.append((u2, depth + 1, tag))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
     finally:
         client_public.close()
         client_auth.close()

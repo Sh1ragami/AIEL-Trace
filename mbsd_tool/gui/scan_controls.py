@@ -25,6 +25,7 @@ from mbsd_tool.core.enumerator import enumerate_paths_worker
 from mbsd_tool.core.scanner import scan_targets_worker
 from mbsd_tool.core.models import ScanMode, ScanResult, AuthConfig, ScanOptions, XSSOptions, SQLIOptions
 from mbsd_tool.core.auth import login_worker
+from mbsd_tool.gui.icons import named_icon
 
 
 class ScanControls(QWidget):
@@ -53,6 +54,7 @@ class ScanControls(QWidget):
         self.enumerate_btn.setStyleSheet(
             "background:#43a047;color:white;font-size:13px;padding:4px 10px;border:none;border-radius:4px;margin:6px 6px;"
         )
+        # アイコンはスキャンボタン/タブ以外には付けない
         self.enumerate_btn.setMinimumHeight(32)
 
         self.scan_btn = QPushButton("エンドポイントをスキャン")
@@ -62,6 +64,8 @@ class ScanControls(QWidget):
         self.scan_btn.setStyleSheet(
             "background:#1976d2;color:white;font-size:13px;padding:4px 10px;border:none;border-radius:4px;margin:6px 6px;"
         )
+        self.scan_btn.setIcon(named_icon(self, 'scan'))
+        self.scan_btn.setIconSize(self.enumerate_btn.iconSize())
         self.scan_btn.setMinimumHeight(32)
 
         # 自動表示にするため、ボタンは配置しない（必要なら再表示可）
@@ -74,13 +78,15 @@ class ScanControls(QWidget):
         self.deep_scan_checkbox = QCheckBox("自動深度スキャン（ブラウザでAI操作/DOM検査）")
         self.deep_scan_checkbox.setChecked(False)
 
-        self.paths_table = QTableWidget(0, 1)
-        self.paths_table.setHorizontalHeaderLabels(["パス/URL"])
+        self.paths_table = QTableWidget(0, 3)
+        self.paths_table.setHorizontalHeaderLabels(["選択", "リクエスト名", "パス/URL"])
         self.paths_table.setSelectionBehavior(self.paths_table.SelectionBehavior.SelectRows)
         self.paths_table.setSelectionMode(self.paths_table.SelectionMode.SingleSelection)
         self.paths_table.setAlternatingRowColors(True)
         self.paths_table.horizontalHeader().setStretchLastSection(True)
         self.paths_table.verticalHeader().setVisible(False)
+        self.paths_table.setColumnWidth(0, 64)
+        self.paths_table.setColumnWidth(1, 180)
 
         top_form = QFormLayout()
         top_form.addRow("ターゲット", self.target_input)
@@ -310,10 +316,21 @@ class ScanControls(QWidget):
         self._enum_worker = None
         self.discovered_urls = urls
         self.paths_table.setRowCount(len(urls))
-        for r, u in enumerate(urls):
-            item = QTableWidgetItem(u)
+        for r, u in enumerate(urls, start=1):
+            ck = QTableWidgetItem()
+            ck.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            ck.setCheckState(Qt.Checked)
+            self.paths_table.setItem(r-1, 0, ck)
+            # リクエスト名（自動推測）
+            name_item = QTableWidgetItem(self._guess_request_name(u))
+            name_item.setFlags(name_item.flags() ^ Qt.ItemIsEditable)
+            self.paths_table.setItem(r-1, 1, name_item)
+            # URL（表示に [n] を付与、実URLはUserRole）
+            disp = f"[{r}]\t{u}"
+            item = QTableWidgetItem(disp)
+            item.setData(Qt.UserRole, u)
             item.setFlags(item.flags() ^ Qt.ItemIsEditable)
-            self.paths_table.setItem(r, 0, item)
+            self.paths_table.setItem(r-1, 2, item)
         self.scan_btn.setEnabled(len(urls) > 0)
         self.status_label.setText(f"{len(urls)}件のエンドポイントを検出")
         self.progress_bar.setRange(0, 100)
@@ -321,6 +338,24 @@ class ScanControls(QWidget):
         self.progress_bar.setFormat("")
         if self.deep_scan_checkbox.isChecked() and urls:
             self.deep_scan_requested.emit(urls)
+
+    def _guess_request_name(self, url: str) -> str:
+        try:
+            from urllib.parse import urlparse
+            pr = urlparse(url)
+            path = pr.path.rstrip('/') or '/'
+            if path == '/':
+                return 'トップページ'
+            last = path.split('/')[-1]
+            # 簡易置換
+            mapping = {
+                'login': 'ログイン', 'logout': 'ログアウト', 'top': 'トップページ', 'edit': '登録情報の変更',
+                'complete': '完了', 'list': '一覧', 'detail': '詳細', 'password': 'パスワード',
+            }
+            base = mapping.get(last.lower(), last)
+            return base
+        except Exception:
+            return 'リクエスト'
 
     def _on_enum_error(self, e: str) -> None:
         self._enum_worker = None
@@ -333,6 +368,22 @@ class ScanControls(QWidget):
         if not self.discovered_urls:
             self.status_label.setText("スキャン対象がありません")
             return
+        # チェックされたURLのみ抽出
+        selected_urls: List[str] = []
+        for r in range(self.paths_table.rowCount()):
+            ck = self.paths_table.item(r, 0)
+            url_item = self.paths_table.item(r, 2)
+            if ck and url_item and ck.checkState() == Qt.Checked:
+                url = url_item.data(Qt.UserRole) or url_item.text()
+                if isinstance(url, str) and url.startswith("["):
+                    try:
+                        url = url.split("\t", 1)[1]
+                    except Exception:
+                        pass
+                selected_urls.append(url)
+        if not selected_urls:
+            self.status_label.setText("スキャン対象が選択されていません")
+            return
         mode = ScanMode(self.mode_combo.currentText())
         self.status_label.setText("スキャン中…")
         # Determinate progress during scanning（常時表示のまま 0→100）
@@ -340,7 +391,7 @@ class ScanControls(QWidget):
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("%p%")
 
-        worker = scan_targets_worker(self.discovered_urls, mode, self._auth_config(), self._alt_auth_config(), self._scan_options())
+        worker = scan_targets_worker(selected_urls, mode, self._auth_config(), self._alt_auth_config(), self._scan_options())
         self._scan_worker = worker
         worker.signals.result.connect(self._on_scan_done)
         worker.signals.error.connect(self._on_scan_error)
@@ -376,9 +427,15 @@ class ScanControls(QWidget):
         if not rows:
             return
         row = rows[0].row()
-        url_item = self.paths_table.item(row, 0)
+        url_item = self.paths_table.item(row, 2)
         if url_item:
-            self.load_in_browser_requested.emit(url_item.text())
+            url = url_item.data(Qt.UserRole) or url_item.text()
+            if isinstance(url, str) and url.startswith("["):
+                try:
+                    url = url.split("\t", 1)[1]
+                except Exception:
+                    pass
+            self.load_in_browser_requested.emit(url)
 
     def _toggle_options(self) -> None:
         # The options box is the previous widget added before status label

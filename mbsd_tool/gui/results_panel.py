@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QFrame,
 )
-from PySide6.QtWidgets import QHeaderView, QDialog, QDialogButtonBox, QFormLayout, QTextEdit
+from PySide6.QtWidgets import QHeaderView, QDialog, QDialogButtonBox, QFormLayout, QTextEdit, QAbstractItemView
 from PySide6.QtGui import QColor, QBrush
 
 from mbsd_tool.core.models import ScanResult
@@ -55,7 +55,6 @@ class ResultsPanel(QWidget):
             vbox = QVBoxLayout(card)
             vbox.setContentsMargins(12, 10, 12, 10)
             title = QLabel(name)
-            # ラベルの不要な枠線/背景を抑止
             title.setStyleSheet("color: white; font-weight: bold; letter-spacing: 1px; border: none; background: transparent;")
             title.setFrameShape(QFrame.NoFrame)
             title.setFocusPolicy(Qt.NoFocus)
@@ -72,6 +71,7 @@ class ResultsPanel(QWidget):
         self.summary.setSelectionBehavior(self.summary.SelectionBehavior.SelectRows)
         self.summary.setSelectionMode(self.summary.SelectionMode.SingleSelection)
         self.summary.verticalHeader().setVisible(False)
+        self.summary.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.summary.itemSelectionChanged.connect(self._on_summary_selected)
         self.summary.setAlternatingRowColors(True)
         self.summary.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -80,11 +80,12 @@ class ResultsPanel(QWidget):
         self.table.setHorizontalHeaderLabels(["エンドポイント", "脆弱性", "重要度", "カテゴリ", "検査タイプ"])
         self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.itemDoubleClicked.connect(self._on_detail_clicked)
         self.status_label = QLabel("結果はまだありません")
         # Export (top, compact)
         self.format_combo = QComboBox()
-        self.format_combo.addItems(["Markdown", "HTML", "PDF"])
+        self.format_combo.addItems(["Markdown", "HTML", "PDF", "PDF (AIEL)", "DOCX (AIEL)"])
         export_btn = QPushButton("エクスポート")
         export_btn.clicked.connect(self.on_export)
         export_bar = QHBoxLayout()
@@ -95,13 +96,13 @@ class ResultsPanel(QWidget):
 
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.addWidget(QLabel("結果"))
+        layout.addWidget(self._mk_header("結果"))
         layout.addLayout(export_bar)
         # Charts are removed; show severity bar instead
         layout.addWidget(self.severity_bar)
-        layout.addWidget(QLabel("サマリー"))
+        layout.addWidget(self._mk_header("サマリー"))
         layout.addWidget(self.summary)
-        layout.addWidget(QLabel("詳細"))
+        layout.addWidget(self._mk_header("詳細"))
         layout.addWidget(self.table)
         layout.addWidget(self.status_label)
 
@@ -109,6 +110,17 @@ class ResultsPanel(QWidget):
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.addWidget(scroll)
 
         self._latest: ScanResult | None = None
+
+    def _mk_header(self, text: str, _sp: object | None = None) -> QWidget:
+        w = QWidget()
+        hb = QHBoxLayout(w)
+        hb.setContentsMargins(0, 6, 0, 2)
+        hb.setSpacing(6)
+        title = QLabel(text)
+        title.setStyleSheet("font-weight:600;")
+        hb.addWidget(title)
+        hb.addStretch(1)
+        return w
 
     def update_results(self, result: ScanResult) -> None:
         self._latest = result
@@ -139,17 +151,29 @@ class ResultsPanel(QWidget):
             "Markdown": "Markdown (*.md)",
             "HTML": "HTML (*.html)",
             "PDF": "PDF (*.pdf)",
+            "PDF (AIEL)": "PDF (*.pdf)",
+            "DOCX (AIEL)": "Word (*.docx)",
         }
         default_name = {
             "Markdown": "report.md",
             "HTML": "report.html",
             "PDF": "report.pdf",
+            "PDF (AIEL)": "report_aiel.pdf",
+            "DOCX (AIEL)": "report_aiel.docx",
         }[fmt]
         path, _ = QFileDialog.getSaveFileName(self, f"{fmt}を保存", default_name, filters[fmt])
         if not path:
             return
         try:
-            export_report(self._latest, path, fmt.lower(), None)
+            # 既定は指定形式にマップ
+            key_map = {
+                "Markdown": "company_markdown",
+                "HTML": "company_html",
+                "PDF": "company_pdf",
+                "PDF (AIEL)": "aiel_pdf",
+                "DOCX (AIEL)": "aiel_docx",
+            }
+            export_report(self._latest, path, key_map.get(fmt, fmt.lower()), None)
             self.status_label.setText(f"保存しました: {path}")
         except Exception as e:
             self.status_label.setText(f"エクスポートエラー: {e}")

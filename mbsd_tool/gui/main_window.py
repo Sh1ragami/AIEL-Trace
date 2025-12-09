@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QStyle
 from PySide6.QtGui import QAction
 
 from mbsd_tool.gui.scan_controls import ScanControls
@@ -74,8 +75,10 @@ class MainWindow(QMainWindow):
         theme_menu.addAction(self.act_theme_light)
         theme_menu.addAction(self.act_theme_dark)
 
-        self.tabs.addTab(self.scan_controls, "ターゲット/スキャン")
-        self.tabs.addTab(self.results_panel, "結果/レポート")
+        scan_ic = self.style().standardIcon(QStyle.SP_DialogOpenButton)
+        results_ic = self.style().standardIcon(QStyle.SP_FileDialogDetailedView)
+        self.tabs.addTab(self.scan_controls, scan_ic, "ターゲット/スキャン")
+        self.tabs.addTab(self.results_panel, results_ic, "結果/レポート")
 
         # Show dock only on Scan tab
         self.tabs.currentChanged.connect(self._on_tab_changed)

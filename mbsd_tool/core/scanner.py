@@ -20,6 +20,18 @@ SEC_HEADERS = [
     "referrer-policy",
 ]
 
+# Common error signatures for noisy error disclosure detection
+ERROR_SIGNS = [
+    "traceback (most recent call last)",
+    "stack trace",
+    "exception:",
+    "fatal error",
+    "notice:",
+    "warning:",
+    "undefined index",
+    "undefined variable",
+]
+
 
 def _passive_checks(url: str, resp: httpx.Response) -> List[VulnerabilityFinding]:
     findings: List[VulnerabilityFinding] = []
@@ -177,6 +189,76 @@ def _passive_checks(url: str, resp: httpx.Response) -> List[VulnerabilityFinding
                 test_type="受動的",
             )
         )
+    # HSTS 未設定（HTTPSのとき）
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme == "https":
+            if "strict-transport-security" not in resp.headers:
+                findings.append(
+                    VulnerabilityFinding(
+                        name="HSTS未設定",
+                        severity="低",
+                        evidence="Strict-Transport-Security ヘッダなし",
+                        reproduction_steps=[f"GET {url}", "レスポンスヘッダを確認"],
+                        category="I HTTPヘッダ",
+                        test_type="受動的",
+                        remediation="HTTPS運用時はHSTSを有効化し、max-age を十分な値に設定してください。"
+                    )
+                )
+    except Exception:
+        pass
+    # Cookie属性の不備（Set-Cookie から）
+    try:
+        sc_all = []
+        get_list = getattr(resp.headers, "get_list", None)
+        if callable(get_list):
+            sc_all = resp.headers.get_list("set-cookie")
+        else:
+            v = resp.headers.get("set-cookie")
+            if v:
+                sc_all = [v]
+        for sc in sc_all:
+            scl = sc.lower()
+            is_session = any(k in scl for k in ["sess", "phpsessid", "jsessionid"]) or ("session" in scl)
+            if is_session:
+                if "httponly" not in scl:
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="セッションクッキーにHttpOnly未設定",
+                            severity="中",
+                            evidence=sc,
+                            reproduction_steps=[f"GET {url}", "Set-Cookie 属性を確認"],
+                            category="K セッション/認証",
+                            test_type="受動的",
+                            remediation="セッションCookieに HttpOnly を付与してください。"
+                        )
+                    )
+                if url.lower().startswith("https://") and ("secure" not in scl):
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="セッションクッキーにSecure未設定",
+                            severity="中",
+                            evidence=sc,
+                            reproduction_steps=[f"GET {url}", "Set-Cookie 属性を確認"],
+                            category="K セッション/認証",
+                            test_type="受動的",
+                            remediation="HTTPS配信ではセッションCookieに Secure を付与してください。"
+                        )
+                    )
+                if "samesite" not in scl:
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="セッションクッキーにSameSite未設定",
+                            severity="低",
+                            evidence=sc,
+                            reproduction_steps=[f"GET {url}", "Set-Cookie 属性を確認"],
+                            category="K セッション/認証",
+                            test_type="受動的",
+                            remediation="SameSite=Lax 以上の設定を推奨します。"
+                        )
+                    )
+    except Exception:
+        pass
     # クリックジャッキングの可能性: XFO/CSPのframe-ancestorsなし
     csp = resp.headers.get("content-security-policy", "").lower()
     xfo = resp.headers.get("x-frame-options", "").lower()
@@ -214,6 +296,39 @@ def _passive_checks(url: str, resp: httpx.Response) -> List[VulnerabilityFinding
                 )
         except Exception:
             pass
+    # 入力値検証（クライアント側）の不備（required/pattern が見当たらない）
+    if resp.status_code == 200 and "text/html" in resp.headers.get("content-type", ""):
+        try:
+            soup = BeautifulSoup(resp.text, "lxml")
+            inputs = soup.find_all("input")
+            text_like = [i for i in inputs if (i.get("type") or "text").lower() in ("text", "email", "number", "search", "tel")]
+            if text_like:
+                weak = [i for i in text_like if not i.has_attr("required") and not i.has_attr("pattern")]
+                if len(weak) == len(text_like):
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="入力値検証の不備（クライアント側）",
+                            severity="低",
+                            evidence="input に required/pattern が見当たらない",
+                            reproduction_steps=[f"GET {url}", "フォームのinput属性を確認"],
+                            category="入力",
+                            test_type="受動的",
+                        )
+                    )
+        except Exception:
+            pass
+    # デバッグ機能の残存（簡易）
+    if resp.headers.get("x-debug-token") or "_debugbar" in resp.text.lower():
+        findings.append(
+            VulnerabilityFinding(
+                name="デバッグ機能の残存",
+                severity="中",
+                evidence="X-Debug-Token ヘッダ / debugbar 痕跡",
+                reproduction_steps=[f"GET {url}", "レスポンスヘッダ/スクリプトを確認"],
+                category="サイトデザイン",
+                test_type="受動的",
+            )
+        )
 
     # クリプトジャッキングの疑い: 既知キーワード
     if resp.status_code == 200 and "text/html" in resp.headers.get("content-type", ""):
@@ -288,13 +403,116 @@ def _passive_checks(url: str, resp: httpx.Response) -> List[VulnerabilityFinding
                     reproduction_steps=[f"IMGタグ等で {url} を読み込む"],
                     category="C CSRF",
                     test_type="受動的",
+            )
+        )
+    # セッションIDがURLに露出（jsessionid, phpsessid など）
+    try:
+        if resp.status_code == 200:
+            body = resp.text.lower()
+            if any(tok in body for tok in ["jsessionid=", "phpsessid="]):
+                findings.append(
+                    VulnerabilityFinding(
+                        name="セッションIDの漏えい（URL）",
+                        severity="高",
+                        evidence="URL内にセッション識別子らしき文字列",
+                        reproduction_steps=[f"GET {url}", "HTML内のリンクに jsessionid 等を確認"],
+                        category="K セッション/認証",
+                        test_type="受動的",
+                    )
+                )
+    except Exception:
+        pass
+    # HTMLコメント内の不要情報
+    try:
+        if resp.status_code == 200 and "text/html" in resp.headers.get("content-type", ""):
+            soup4 = BeautifulSoup(resp.text, "lxml")
+            comments = soup4.find_all(string=lambda t: isinstance(t, str) and "<!--" in t)
+            blob = "\n".join(map(str, comments)).lower()
+            if any(k in blob for k in ["todo", "password", "apikey", "secret", "key="]):
+                findings.append(
+                    VulnerabilityFinding(
+                        name="不要な情報の出力（HTMLコメント）",
+                        severity="低",
+                        evidence="コメントに機微な語を検出",
+                        reproduction_steps=[f"GET {url}", "HTMLコメントを確認"],
+                        category="出力",
+                        test_type="受動的",
+                    )
+                )
+    except Exception:
+        pass
+    # 例外/スタックトレースの露出
+    try:
+        if resp.status_code >= 500 or any(sig in resp.text.lower() for sig in ERROR_SIGNS):
+            findings.append(
+                VulnerabilityFinding(
+                    name="不要なエラーメッセージの出力",
+                    severity="中",
+                    evidence=f"HTTP {resp.status_code}",
+                    reproduction_steps=[f"GET {url}", "応答本文に例外/スタックトレースの露出"],
+                    category="出力",
+                    test_type="受動的",
                 )
             )
+    except Exception:
+        pass
+    # ローカルIPの露出
+    try:
+        import re
+        if resp.status_code == 200:
+            b = resp.text
+            if re.search(r"(?:127\.0\.0\.1|10\.(?:\d{1,3}\.){2}\d{1,3}|192\.168\.(?:\d{1,3})\.(?:\d{1,3})|172\.(?:1[6-9]|2\d|3[0-1])\.(?:\d{1,3})\.(?:\d{1,3}))", b):
+                findings.append(
+                    VulnerabilityFinding(
+                        name="ローカルIPアドレスの出力",
+                        severity="低",
+                        evidence="本文にプライベートIPらしき値",
+                        reproduction_steps=[f"GET {url}", "本文内のIPアドレスを確認"],
+                        category="Webサーバ/フレームワーク",
+                        test_type="受動的",
+                    )
+                )
+    except Exception:
+        pass
     return findings
 
 
 def _active_checks(url: str, client: httpx.Client, mode: ScanMode, options: ScanOptions | None) -> List[VulnerabilityFinding]:
     findings: List[VulnerabilityFinding] = []
+    # HTTPS適用の有無/適用漏れ（通信）
+    try:
+        from urllib.parse import urlparse, urlunparse
+        pr = urlparse(url)
+        if pr.scheme == "http":
+            https_url = urlunparse(("https", pr.netloc, pr.path, pr.params, pr.query, pr.fragment))
+            try:
+                r_https = client.get(https_url, timeout=6.0)
+                r_http = client.get(url, timeout=6.0, follow_redirects=False)
+                if r_http.status_code < 400 and (r_http.headers.get("location") is None):
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="HTTPSの未使用/適用漏れ",
+                            severity="高",
+                            evidence=f"HTTPアクセスが可能: {url}",
+                            reproduction_steps=[f"GET {url}", f"GET {https_url}"],
+                            category="通信",
+                            test_type="能動的",
+                            remediation="HTTPへのアクセスをHTTPSへリダイレクトし、HSTSを有効化してください。",
+                        )
+                    )
+            except Exception:
+                findings.append(
+                    VulnerabilityFinding(
+                        name="HTTPS未対応の可能性",
+                        severity="中",
+                        evidence=f"HTTPSに接続不可: {https_url}",
+                        reproduction_steps=[f"GET {https_url}", "接続失敗を確認"],
+                        category="通信",
+                        test_type="能動的",
+                    )
+                )
+    except Exception:
+        pass
     # XSS tests (reflected)
     if options and options.xss.enabled and mode in (ScanMode.NORMAL, ScanMode.ATTACK):
         try:
@@ -312,7 +530,7 @@ def _active_checks(url: str, client: httpx.Client, mode: ScanMode, options: Scan
                     findings.append(
                         VulnerabilityFinding(
                             name="潜在的な反射型XSS",
-                            severity="中",
+                            severity="高" if mode == ScanMode.ATTACK else "中",
                             evidence=f"トークン検出: {','.join(options.xss.success_tokens)}",
                             reproduction_steps=[
                                 f"GET {url}?{options.xss.param_name}={options.xss.payload}",
@@ -326,7 +544,7 @@ def _active_checks(url: str, client: httpx.Client, mode: ScanMode, options: Scan
         except Exception:
             pass
 
-    # SQL Injection tests (very conservative)
+    # SQL Injection tests（エラーベース + ブール/時間差を強化）
     if options and options.sqli.enabled and mode == ScanMode.ATTACK:
         try:
             p = options.sqli.param_name
@@ -338,7 +556,11 @@ def _active_checks(url: str, client: httpx.Client, mode: ScanMode, options: Scan
                 # Compare length heuristic or error signatures
                 diff = abs(len(r_inj.text) - len(r_base.text))
                 large_change = len(r_base.text) > 0 and diff / max(1, len(r_base.text)) > 0.2
-                error_sig = any(s in r_inj.text.lower() for s in (s.lower() for s in options.sqli.error_signatures))
+                more_errors = [
+                    "syntax error", "warning: mysql", "unclosed quotation", "you have an error in your sql",
+                    "fatal error", "sqlstate", "odbc", "ora-", "postgres", "sqlite", "mysql", "mariadb"
+                ]
+                error_sig = any(s in r_inj.text.lower() for s in (s.lower() for s in (options.sqli.error_signatures + more_errors)))
                 if large_change or error_sig:
                     findings.append(
                         VulnerabilityFinding(
@@ -351,6 +573,48 @@ def _active_checks(url: str, client: httpx.Client, mode: ScanMode, options: Scan
                                 "応答差異を比較",
                             ],
                             notes="注入テンプレートは options で変更可（安全な値に制限可能）",
+                            category="A SQLi",
+                            test_type="能動的",
+                        )
+                    )
+        except Exception:
+            pass
+        # Boolean-based（true/falseの差分）
+        try:
+            p = options.sqli.param_name
+            tval = f"{options.sqli.baseline_value} AND 1=1"
+            fval = f"{options.sqli.baseline_value} AND 1=2"
+            rt = client.get(url, params={p: tval})
+            rf = client.get(url, params={p: fval})
+            if rt.status_code < 400 and rf.status_code < 400:
+                if abs(len(rt.text) - len(rf.text)) / max(1, len(rt.text)) > 0.15:
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="SQLインジェクションの可能性（ブール差）",
+                            severity="中",
+                            evidence="true/false 条件で応答差異",
+                            reproduction_steps=[f"GET {url}?{p}={tval}", f"GET {url}?{p}={fval}", "差分を比較"],
+                            category="A SQLi",
+                            test_type="能動的",
+                        )
+                    )
+        except Exception:
+            pass
+        # Boolean-based（true/falseの差分）
+        try:
+            p = options.sqli.param_name
+            tval = f"{options.sqli.baseline_value} AND 1=1"
+            fval = f"{options.sqli.baseline_value} AND 1=2"
+            rt = client.get(url, params={p: tval})
+            rf = client.get(url, params={p: fval})
+            if rt.status_code < 400 and rf.status_code < 400:
+                if abs(len(rt.text) - len(rf.text)) / max(1, len(rt.text)) > 0.15:
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="SQLインジェクションの可能性（ブール差）",
+                            severity="中",
+                            evidence="true/false 条件で応答差異",
+                            reproduction_steps=[f"GET {url}?{p}={tval}", f"GET {url}?{p}={fval}", "差分を比較"],
                             category="A SQLi",
                             test_type="能動的",
                         )
@@ -387,9 +651,13 @@ def _active_checks(url: str, client: httpx.Client, mode: ScanMode, options: Scan
                     break
         except Exception:
             pass
-    # Open Redirect（安全な検査）
+    # Open Redirect（検査強化: パラメータ拡張 + meta/JSの検出）
     if mode in (ScanMode.NORMAL, ScanMode.ATTACK):
-        for pname in ("next", "redirect", "url", "return", "to"):
+        redirect_params = (
+            "next", "redirect", "url", "return", "to", "dest", "destination",
+            "redir", "returnTo", "continue", "forward", "goto", "target", "r", "u"
+        )
+        for pname in redirect_params:
             try:
                 target = "https://example.com/"
                 rr = client.get(url, params={pname: target}, follow_redirects=False)
@@ -408,27 +676,251 @@ def _active_checks(url: str, client: httpx.Client, mode: ScanMode, options: Scan
                     break
             except Exception:
                 continue
-
-    # ディレクトリ・トラバーサル（攻撃モード・オプトイン）
-    if mode == ScanMode.ATTACK and options and getattr(options, "traversal", None) and getattr(options.traversal, "enabled", False):
-        payload = getattr(options.traversal, "payload", "../../../../../../etc/passwd")
-        for pname in ("path", "file", "page"):
-            try:
-                rr = client.get(url, params={pname: payload})
-                if rr.status_code < 400 and "root:x:0:" in rr.text:
+        # Meta refresh / JS遷移の検出
+        try:
+            rr2 = client.get(url, follow_redirects=True)
+            if rr2.status_code < 400 and "example.com" in rr2.text.lower():
+                import re
+                html = rr2.text.lower()
+                if re.search(r"""http-equiv\s*=\s*"refresh"[^"]+url\s*=\s*https?://example\.com""", html) or \
+                   re.search(r"""window\.location\s*=\s*['\"]https?://example\.com""", html):
                     findings.append(
                         VulnerabilityFinding(
-                            name="ディレクトリ・トラバーサル",
+                            name="意図しないリダイレクト（Open Redirect）",
+                            severity="中",
+                            evidence="Meta refresh/JSで外部へ遷移",
+                            reproduction_steps=[f"GET {url}", "HTML内のrefresh/JS遷移を確認"],
+                            category="H 意図しないリダイレクト",
+                            test_type="能動的",
+                        )
+                    )
+        except Exception:
+            pass
+
+    # Host Header Injection（リダイレクト/リンクのホスト汚染）
+    try:
+        rrh = client.get(url, headers={"Host": "evil.example.com"})
+        text_lower = rrh.text.lower()
+        loc = rrh.headers.get("location", "").lower()
+        if ("evil.example.com" in text_lower) or ("evil.example.com" in loc):
+            findings.append(
+                VulnerabilityFinding(
+                    name="Hostヘッダ依存の挙動の可能性",
+                    severity="中",
+                    evidence="応答/Locationに任意Hostが混入",
+                    reproduction_steps=["Hostヘッダをevil.example.comに設定し取得", "応答内のリンク/Locationを確認"],
+                    category="I HTTPヘッダ",
+                    test_type="能動的",
+                )
+            )
+    except Exception:
+        pass
+
+    # CORSのOrigin反映（反射許可）
+    try:
+        rco = client.get(url, headers={"Origin": "http://evil.example.com"})
+        aco = rco.headers.get("access-control-allow-origin", "")
+        acc = rco.headers.get("access-control-allow-credentials", "").lower()
+        if aco == "http://evil.example.com" and acc == "true":
+            findings.append(
+                VulnerabilityFinding(
+                    name="CORSの過剰許可（Origin反射）",
+                    severity="中",
+                    evidence="ACAO に要求Originがそのまま反映 + Credentials",
+                    reproduction_steps=["Originヘッダを変更して取得", "ACAO/ACC を確認"],
+                    category="サイトデザイン/クロスオリジン",
+                    test_type="能動的",
+                )
+            )
+    except Exception:
+        pass
+
+    # パラメータ改ざん（role/isAdmin 等）による越権の可能性
+    try:
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        pr = urlparse(url)
+        base = client.get(url)
+        if base.status_code < 500:
+            qs = parse_qs(pr.query)
+            candidates = ["role", "isAdmin", "admin", "priv", "level"]
+            for p in candidates:
+                qs2 = dict(qs)
+                qs2[p] = ["1"]
+                newq = urlencode({k: v[0] for k, v in qs2.items()})
+                u2 = urlunparse((pr.scheme, pr.netloc, pr.path, pr.params, newq, pr.fragment))
+                r2 = client.get(u2)
+                if (base.status_code in (401, 403)) and (r2.status_code == 200):
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="不正なパラメータ操作による越権",
                             severity="高",
-                            evidence="/etc/passwd の一部を検出",
-                            reproduction_steps=[f"GET {url}?{pname}={payload}", "レスポンスにpasswd内容が含まれる"],
-                            category="G パス名パラメータ未チェック/ディレクトリ・トラバーサル",
+                            evidence=f"{p}=1 で 401/403→200",
+                            reproduction_steps=[f"GET {url}", f"GET {u2}"],
+                            category="認可",
+                            test_type="能動的",
+                        )
+                    )
+                    break
+                # 大きな差分（保守的）
+                if r2.status_code < 400 and abs(len(r2.text) - len(base.text)) / max(1, len(base.text)) > 0.3:
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="不正なパラメータ操作の可能性",
+                            severity="中",
+                            evidence=f"{p}=1 で応答差分大",
+                            reproduction_steps=[f"GET {url}", f"GET {u2}"],
+                            category="認可",
+                            test_type="能動的",
+                        )
+                    )
+                    break
+    except Exception:
+        pass
+
+    # バッファオーバーフロー/入力長による異常（攻撃モードのみ）
+    if mode == ScanMode.ATTACK:
+        try:
+            long_payload = "A" * 4000
+            rlong = client.get(url, params={"q": long_payload})
+            if rlong.status_code >= 500 or any(s in rlong.text.lower() for s in ["segmentation fault", "stack overflow", "buffer overflow"]):
+                findings.append(
+                    VulnerabilityFinding(
+                        name="バッファオーバーフローの可能性",
+                        severity="高",
+                        evidence=f"HTTP {rlong.status_code} もしくは異常メッセージ",
+                        reproduction_steps=[f"GET {url}?q=(長い文字列)", "サーバエラー/異常を確認"],
+                        category="入力/その他インジェクション",
+                        test_type="能動的",
+                    )
+                )
+        except Exception:
+            pass
+
+    # HTTPヘッダインジェクション（CRLF）簡易検査（攻撃モード）
+    if mode == ScanMode.ATTACK:
+        crlf_params = ("filename", "name", "download", "disposition", "header", "addheader")
+        for pname in crlf_params:
+            try:
+                inj = "test%0d%0aX-Injection-Test: injected"
+                rcr = client.get(url, params={pname: inj}, follow_redirects=False)
+                # ヘッダ分離が成立するとカスタムヘッダが混入する可能性
+                if any(h.lower() == "x-injection-test" for h in rcr.headers.keys()):
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="HTTPヘッダインジェクションの可能性",
+                            severity="高",
+                            evidence="レスポンスヘッダに 'X-Injection-Test' を検出",
+                            reproduction_steps=[f"GET {url}?{pname}={inj}", "レスポンスヘッダを確認"],
+                            category="I HTTPヘッダ",
                             test_type="能動的",
                         )
                     )
                     break
             except Exception:
                 continue
+
+    # SSRFの可能性（URL系パラメータで外部コンテンツ反映を簡易検知）
+    try:
+        for pname in ("url", "image", "fetch", "proxy", "target", "uri", "link", "feed", "callback"):
+            rrs = client.get(url, params={pname: "http://example.com"})
+            if rrs.status_code < 400 and ("example domain" in rrs.text.lower()):
+                findings.append(
+                    VulnerabilityFinding(
+                        name="SSRF/サーバ側フェッチの可能性",
+                        severity="中",
+                        evidence=f"{pname}=http://example.com で外部サイト断片を検出",
+                        reproduction_steps=[f"GET {url}?{pname}=http://example.com", "応答にExample Domain等の文字列"],
+                        category="N SSRF/サーバ側要求",
+                        test_type="能動的",
+                    )
+                )
+                break
+    except Exception:
+        pass
+
+    # HTTPメソッド悪用（TRACE/XSTなど）
+    try:
+        rrt = client.request("TRACE", url)
+        if rrt.status_code < 400 and ("TRACE" in rrt.text or rrt.text.strip()):
+            findings.append(
+                VulnerabilityFinding(
+                    name="TRACEメソッド有効の可能性",
+                    severity="低",
+                    evidence="TRACE応答を取得",
+                    reproduction_steps=["TRACE メソッドで同URLを取得"],
+                    category="I HTTPヘッダ",
+                    test_type="能動的",
+                )
+            )
+    except Exception:
+        pass
+
+    # テンプレートインジェクションの可能性（非常に保守的な簡易検査）
+    try:
+        baseline = client.get(url)
+        if baseline.status_code < 400:
+            base_body = baseline.text
+            candidates = ["q", "s", "search", "query", "name", "title", "message"]
+            payloads = ["{{7*7}}", "${{7*7}}", "#{7*7}", "<%= 7*7 %>"]
+            for p in candidates:
+                hit = False
+                for pay in payloads:
+                    rti = client.get(url, params={p: pay})
+                    if rti.status_code < 400:
+                        body = rti.text
+                        # 49 が新たに現れるなどの変化（非常に単純な指標）
+                        if ("49" in body) and ("49" not in base_body):
+                            hit = True
+                            break
+                if hit:
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="テンプレートインジェクションの可能性",
+                            severity="中",
+                            evidence="数式評価結果らしき差分（'49'）",
+                            reproduction_steps=[f"GET {url}?{p}={{7*7}}", "応答に '49' が含まれることを確認"],
+                            category="M テンプレートインジェクション/その他",
+                            test_type="能動的",
+                        )
+                    )
+                    break
+    except Exception:
+        pass
+
+    # ディレクトリ・トラバーサル（攻撃モード・オプトイン）
+    if mode == ScanMode.ATTACK and options and getattr(options, "traversal", None) and getattr(options.traversal, "enabled", False):
+        linux_payloads = [
+            "../../../../../../etc/passwd",
+            "..%2f..%2f..%2f..%2f..%2fetc%2fpasswd",
+            "..%252f..%252f..%252f..%252f..%252fetc%252fpasswd",
+        ]
+        win_payloads = [
+            "..\\..\\..\\..\\windows\\win.ini",
+            "..%5c..%5c..%5c..%5cwindows%5cwin.ini",
+        ]
+        payloads = linux_payloads + win_payloads
+        param_candidates = ("path", "file", "page", "template", "include", "filename", "dir", "download")
+        for pname in param_candidates:
+            for payload in payloads:
+                try:
+                    rr = client.get(url, params={pname: payload})
+                    body = rr.text.lower()
+                    if rr.status_code < 400 and ("root:x:" in body or "for 16-bit app support" in body):
+                        findings.append(
+                            VulnerabilityFinding(
+                                name="ディレクトリ・トラバーサル",
+                                severity="高",
+                                evidence=f"パラメータ {pname} によるファイル露出の兆候",
+                                reproduction_steps=[f"GET {url}?{pname}={payload}", "既知ファイル内容の露出を確認"],
+                                category="G パス名パラメータ未チェック/ディレクトリ・トラバーサル",
+                                test_type="能動的",
+                            )
+                        )
+                        raise StopIteration
+                except StopIteration:
+                    break
+                except Exception:
+                    continue
 
     return findings
 
@@ -500,7 +992,7 @@ def _xss_form_tests(url: str, html: str, client: httpx.Client, mode: ScanMode, o
                 findings.append(
                     VulnerabilityFinding(
                         name="潜在的な反射型XSS",
-                        severity="中",
+                        severity="高" if mode == ScanMode.ATTACK else "中",
                         evidence=f"フォーム送信後にトークン検出",
                         reproduction_steps=[
                             f"{method.upper()} {action}",
@@ -927,6 +1419,41 @@ def scan_targets(
     client_public.close()
     if client_alt is not None:
         client_alt.close()
+    # 集約所見: 認可処理の有無/適用範囲、HTTPS適用範囲
+    try:
+        has_authz = any(
+            any((v.severity in ("高", "中", "低", "情報")) and (v.category or "").startswith("L ") or (v.name and "認可" in v.name)
+                for v in vulns.get(u, []))
+            for u in endpoints
+        )
+        # 401/403の存在で簡易判定
+        # ここではリクエスト結果のステータスを追っていないため、既存所見から推測に留める
+        summary_endpoint = endpoints[0] if endpoints else ""
+        if summary_endpoint:
+            vulns[summary_endpoint] = vulns.get(summary_endpoint, [])
+            vulns[summary_endpoint].append(
+                VulnerabilityFinding(
+                    name="認可処理の有無/認可方法（簡易）",
+                    severity="情報",
+                    explanation="検出所見から認可関連の兆候を集約。保護すべきURLに401/403/認可チェックが無い場合、適用漏れの可能性。",
+                    category="認可",
+                    test_type="受動的",
+                )
+            )
+            # HTTPS適用範囲（http/https の混在有無）
+            http_count = sum(1 for u in endpoints if u.startswith("http://"))
+            https_count = sum(1 for u in endpoints if u.startswith("https://"))
+            vulns[summary_endpoint].append(
+                VulnerabilityFinding(
+                    name="HTTPSの適用範囲（簡易）",
+                    severity="情報",
+                    explanation=f"HTTPS: {https_count} / HTTP: {http_count}",
+                    category="通信",
+                    test_type="受動的",
+                )
+            )
+    except Exception:
+        pass
     # Additional exposure sweep on site root
     if endpoints:
         origin = endpoints[0]
