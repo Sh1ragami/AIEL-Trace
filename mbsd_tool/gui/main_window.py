@@ -141,12 +141,20 @@ class MainWindow(QMainWindow):
             QLineEdit, QComboBox, QTableWidget, QGroupBox { background: #3a3a3a; border: 1px solid #555; }
             QPushButton { background: #444; border: 1px solid #666; padding: 6px 10px; }
             QPushButton:hover { background: #555; }
+            QProgressBar { background: #3a3a3a; border: 1px solid #555; border-radius: 4px; text-align: center; }
+            QProgressBar::chunk { background-color: #2c4f73; }
             QTabWidget::pane { border-top: 1px solid #555; }
             QHeaderView::section { background: #3a3a3a; color: #ddd; }
             QMenu { background: #333; color: #eee; }
             QDockWidget::title { background: #333; color: #ddd; padding: 4px; }
             """
             app.setStyleSheet(qss)
+            # Chart theme反映
+            try:
+                self.results_panel.set_theme("dark")
+                self.scan_controls.apply_theme("dark")
+            except Exception:
+                pass
         else:
             self.act_theme_light.setChecked(True)
             self.act_theme_dark.setChecked(False)
@@ -155,9 +163,16 @@ class MainWindow(QMainWindow):
             QLineEdit, QComboBox, QTableWidget, QGroupBox { background: #ffffff; border: 1px solid #ccc; }
             QPushButton { background: #f0f0f0; border: 1px solid #ccc; padding: 6px 10px; }
             QPushButton:hover { background: #e6e6e6; }
+            QProgressBar { background: #ffffff; border: 1px solid #ccc; border-radius: 4px; text-align: center; }
+            QProgressBar::chunk { background-color: #1976d2; }
             QTabWidget::pane { border-top: 1px solid #ccc; }
             QHeaderView::section { background: #f0f0f0; color: #222; }
             QMenu { background: #fff; color: #222; }
             QDockWidget::title { background: #f0f0f0; color: #222; padding: 4px; }
             """
             app.setStyleSheet(qss)
+            try:
+                self.results_panel.set_theme("light")
+                self.scan_controls.apply_theme("light")
+            except Exception:
+                pass

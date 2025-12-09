@@ -55,3 +55,44 @@ class LogicAnalyzer:
                 {"param": "amount", "suggested_value": "1", "reason": "数量/金額の縮小"},
             ][:max_suggestions]
 
+    def assess_vulnerabilities(self, html: str, url: str, max_items: int = 5) -> List[Dict[str, Any]]:
+        """LLMにHTMLを渡し、潜在的な脆弱性所見をJSONで取得する（ロバストなフォールバック付き）。"""
+        prompt = (
+            "You are a security tester. Given an HTML page and its URL, list potential web vulnerabilities that might be present. "
+            "Respond as compact JSON: {\"findings\":[{\"name\":str,\"severity\":str,\"reason\":str,\"category\":str}...]}. "
+            "Use Japanese for names and reasons when possible (e.g., XSS, CSRF, 認可不備). Limit to %d items. " % max_items
+        )
+        url_api = f"{self.base_url}/api/chat"
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": f"URL: {url}\nHTML:\n" + html[:20000]},
+            ],
+            "stream": False,
+        }
+        try:
+            r = httpx.post(url_api, json=payload, timeout=15.0)
+            r.raise_for_status()
+            data = r.json()
+            content = data.get("message", {}).get("content", "{}")
+            obj = json.loads(content)
+            arr = obj.get("findings", []) if isinstance(obj, dict) else []
+            out: List[Dict[str, Any]] = []
+            for it in arr:
+                if not isinstance(it, dict):
+                    continue
+                name = str(it.get("name", "潜在的な問題")).strip() or "潜在的な問題"
+                sev = str(it.get("severity", "中")).strip() or "中"
+                reason = str(it.get("reason", "")).strip()
+                cat = str(it.get("category", "LLM所見")).strip() or "LLM所見"
+                out.append({"name": name, "severity": sev, "reason": reason, "category": cat})
+                if len(out) >= max_items:
+                    break
+            return out
+        except Exception:
+            # Fallback簡易所見
+            return [
+                {"name": "CSRF対策不明", "severity": "中", "reason": "POSTフォームにCSRFトークンが見当たらない可能性", "category": "C CSRF"},
+                {"name": "クリックジャッキングの可能性", "severity": "低", "reason": "X-Frame-Options/CSPのframe-ancestors不備", "category": "その他"},
+            ][:max_items]

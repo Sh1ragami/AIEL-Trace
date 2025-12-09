@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QCheckBox,
     QToolButton,
+    QScrollArea,
+    QProgressBar,
 )
 
 from mbsd_tool.core.enumerator import enumerate_paths_worker
@@ -47,10 +49,20 @@ class ScanControls(QWidget):
 
         self.enumerate_btn = QPushButton("パス列挙")
         self.enumerate_btn.clicked.connect(self.on_enumerate)
+        # Style: green action (compact, unified with scan)
+        self.enumerate_btn.setStyleSheet(
+            "background:#43a047;color:white;font-size:13px;padding:4px 10px;border:none;border-radius:4px;margin:6px 6px;"
+        )
+        self.enumerate_btn.setMinimumHeight(32)
 
         self.scan_btn = QPushButton("エンドポイントをスキャン")
         self.scan_btn.clicked.connect(self.on_scan)
         self.scan_btn.setEnabled(False)
+        # 目立つスタイル（青・さらにコンパクト、外側余白を増やす）
+        self.scan_btn.setStyleSheet(
+            "background:#1976d2;color:white;font-size:13px;padding:4px 10px;border:none;border-radius:4px;margin:6px 6px;"
+        )
+        self.scan_btn.setMinimumHeight(32)
 
         # 自動表示にするため、ボタンは配置しない（必要なら再表示可）
         self.open_in_browser_btn = QPushButton("エージェントブラウザで開く")
@@ -58,6 +70,7 @@ class ScanControls(QWidget):
         self.open_in_browser_btn.setVisible(False)
 
         self.status_label = QLabel("待機中")
+        self.status_label.setMinimumHeight(20)
         self.deep_scan_checkbox = QCheckBox("自動深度スキャン（ブラウザでAI操作/DOM検査）")
         self.deep_scan_checkbox.setChecked(False)
 
@@ -108,7 +121,7 @@ class ScanControls(QWidget):
         alt_form.addRow("パスワード", self.alt_password_input)
         self.alt_box.setLayout(alt_form)
 
-        # オプション設定（XSS/SQLi）
+        # オプション設定（XSS/SQLi/Traversal/CMDi/Upload）
         self.xss_enable = QCheckBox("XSS検査を有効化")
         self.xss_enable.setChecked(True)
         self.xss_param = QLineEdit(); self.xss_param.setText("q")
@@ -133,6 +146,20 @@ class ScanControls(QWidget):
         sqli_form.addRow("ベース値", self.sqli_baseline)
         sqli_form.addRow("注入テンプレート", self.sqli_template)
 
+        # Traversal
+        self.trav_enable = QCheckBox("ディレクトリ・トラバーサル検査を有効化（攻撃モード）")
+        self.trav_enable.setChecked(False)
+        self.trav_payload = QLineEdit(); self.trav_payload.setText("../../../../../../etc/passwd")
+        trav_form = QFormLayout()
+        trav_form.addRow(self.trav_enable)
+        trav_form.addRow("ペイロード", self.trav_payload)
+
+        # OSコマンドインジェクション
+        self.cmdi_enable = QCheckBox("OSコマンドインジェクション検査を有効化（攻撃モード）")
+        self.cmdi_enable.setChecked(False)
+        cmdi_form = QFormLayout()
+        cmdi_form.addRow(self.cmdi_enable)
+
         # Upload tests (attack mode only)
         self.upload_enable = QCheckBox("ファイルアップロード検査を有効化（攻撃モード）")
         self.upload_enable.setChecked(False)
@@ -143,22 +170,41 @@ class ScanControls(QWidget):
         opts_layout = QVBoxLayout()
         opts_layout.addLayout(xss_form)
         opts_layout.addLayout(sqli_form)
+        opts_layout.addLayout(trav_form)
+        opts_layout.addLayout(cmdi_form)
         opts_layout.addLayout(up_form)
         opts_box.setLayout(opts_layout)
 
-        # 上部に大きめボタンで配置
+        # 上部に大きめボタンで配置（最上段に）
         btns = QHBoxLayout()
-        for b in (self.enumerate_btn, self.scan_btn):
-            b.setMinimumHeight(36)
-            b.setStyleSheet("font-size: 14px; padding: 6px 14px;")
+        # 左右を少し近づける
+        btns.setSpacing(6)
         btns.addWidget(self.enumerate_btn)
         btns.addWidget(self.scan_btn)
         btns.addStretch(1)
 
-        layout = QVBoxLayout(self)
+        # プログレスバー（スキャン時は割合、列挙時はインジケータ）
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(True)
+        # 常に表示してレイアウトの揺れを防止
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setMinimumHeight(18)
+        self.progress_bar.setMaximumHeight(18)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("")
+
+        # コンテンツ本体（スクロール対象）
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setSpacing(8)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.addLayout(top_form)
+        # ボタン列を最上段へ
+        layout.addLayout(btns)
+        # ターゲット入力などを次に
+        target_box = QGroupBox("ターゲット設定")
+        target_box.setLayout(top_form)
+        layout.addWidget(target_box)
         # Collapsible toggles
         self.auth_toggle = QToolButton()
         self.auth_toggle.setText("認証を表示")
@@ -176,13 +222,15 @@ class ScanControls(QWidget):
         self.alt_toggle.setArrowType(Qt.ArrowType.RightArrow)
         self.alt_toggle.clicked.connect(self._toggle_alt)
 
+        # 進捗バーを上部に配置して視認性を上げる
+        layout.addWidget(self.progress_bar)
+
         layout.addWidget(self.auth_toggle)
         layout.addWidget(self.auth_box)
         self.auth_box.setVisible(False)
         layout.addWidget(self.alt_toggle)
         layout.addWidget(self.alt_box)
         self.alt_box.setVisible(False)
-        layout.addLayout(btns)
         # 折りたたみ可能なオプション
         self.opts_toggle = QToolButton()
         self.opts_toggle.setText("スキャンオプションを表示")
@@ -199,6 +247,14 @@ class ScanControls(QWidget):
         layout.addWidget(QLabel("検出されたパス"))
         layout.addWidget(self.paths_table)
         layout.addWidget(self.status_label)
+
+        # スクロールエリアで全体を包む
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(scroll)
 
         self.discovered_urls: List[str] = []
         # propagate auth config initially
@@ -217,6 +273,21 @@ class ScanControls(QWidget):
             """
         )
 
+    def apply_theme(self, mode: str) -> None:
+        """Adjust prominent button colors for light/dark modes."""
+        if mode == "dark":
+            scan_bg = "#2c4f73"   # darker deep blue (高コントラスト)
+            enum_bg = "#295a33"   # darker green (高コントラスト)
+        else:
+            scan_bg = "#1976d2"
+            enum_bg = "#43a047"
+        self.scan_btn.setStyleSheet(
+            f"background:{scan_bg};color:white;font-size:13px;padding:4px 10px;border:none;border-radius:4px;margin:6px 6px;"
+        )
+        self.enumerate_btn.setStyleSheet(
+            f"background:{enum_bg};color:white;font-size:13px;padding:4px 10px;border:none;border-radius:4px;margin:6px 6px;"
+        )
+
     def on_enumerate(self) -> None:
         base = self.target_input.text().strip()
         if not base:
@@ -224,6 +295,9 @@ class ScanControls(QWidget):
             return
         self.paths_table.setRowCount(0)
         self.status_label.setText("列挙中…")
+        # Indeterminate progress during enumeration（表示は常に維持）
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setFormat("")
 
         worker = enumerate_paths_worker(base, self._auth_config())
         self._enum_worker = worker
@@ -242,12 +316,18 @@ class ScanControls(QWidget):
             self.paths_table.setItem(r, 0, item)
         self.scan_btn.setEnabled(len(urls) > 0)
         self.status_label.setText(f"{len(urls)}件のエンドポイントを検出")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("")
         if self.deep_scan_checkbox.isChecked() and urls:
             self.deep_scan_requested.emit(urls)
 
     def _on_enum_error(self, e: str) -> None:
         self._enum_worker = None
         self.status_label.setText(f"エラー: {e}")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("")
 
     def on_scan(self) -> None:
         if not self.discovered_urls:
@@ -255,22 +335,34 @@ class ScanControls(QWidget):
             return
         mode = ScanMode(self.mode_combo.currentText())
         self.status_label.setText("スキャン中…")
+        # Determinate progress during scanning（常時表示のまま 0→100）
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
 
         worker = scan_targets_worker(self.discovered_urls, mode, self._auth_config(), self._alt_auth_config(), self._scan_options())
         self._scan_worker = worker
         worker.signals.result.connect(self._on_scan_done)
         worker.signals.error.connect(self._on_scan_error)
-        worker.signals.progress.connect(lambda t: self.status_label.setText(t))
+        worker.signals.progress.connect(self._on_scan_progress)
         self.thread_pool.start(worker)
 
     def _on_scan_done(self, result: ScanResult) -> None:
         self._scan_worker = None
         self.status_label.setText("スキャン完了")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(100)
+        # 完了後は空表示にして値を0へ戻す
+        self.progress_bar.setFormat("")
+        self.progress_bar.setValue(0)
         self.scan_completed.emit(result)
 
     def _on_scan_error(self, e: str) -> None:
         self._scan_worker = None
         self.status_label.setText(f"エラー: {e}")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("")
 
     def on_open_in_browser(self) -> None:
         url = self.target_input.text().strip()
@@ -303,6 +395,22 @@ class ScanControls(QWidget):
         opts_box.setVisible(vis)
         self.opts_toggle.setText("スキャンオプションを隠す" if vis else "スキャンオプションを表示")
         self.opts_toggle.setArrowType(Qt.ArrowType.DownArrow if vis else Qt.ArrowType.RightArrow)
+
+    def _on_scan_progress(self, text: object) -> None:
+        # Text format e.g. "スキャン中… i/N"; update label and percentage
+        s = str(text)
+        self.status_label.setText(s)
+        import re
+        m = re.search(r"(\d+)\s*/\s*(\d+)", s)
+        if m:
+            try:
+                cur = int(m.group(1)); total = max(1, int(m.group(2)))
+                pct = int(cur * 100 / total)
+                self.progress_bar.setRange(0, 100)
+                self.progress_bar.setValue(pct)
+                self.progress_bar.setFormat("%p%")
+            except Exception:
+                pass
 
     def _toggle_auth(self) -> None:
         vis = not self.auth_box.isVisible()
@@ -370,6 +478,9 @@ class ScanControls(QWidget):
         )
         opts = ScanOptions(xss=xss, sqli=sqli)
         opts.upload.enabled = self.upload_enable.isChecked()
-        # OSコマンド注入（攻撃モード向け）
-        # UIトグルはまた追加予定。現状は無効のまま。
+        # Traversal/CMDi有効化
+        opts.traversal.enabled = self.trav_enable.isChecked()
+        if self.trav_payload.text().strip():
+            opts.traversal.payload = self.trav_payload.text().strip()
+        opts.cmdi.enabled = self.cmdi_enable.isChecked()
         return opts

@@ -357,6 +357,36 @@ def _active_checks(url: str, client: httpx.Client, mode: ScanMode, options: Scan
                     )
         except Exception:
             pass
+        # Time-based SQLi (遅延応答の検知)
+        try:
+            import time
+            p = options.sqli.param_name
+            time_payloads = [
+                "1' AND SLEEP(5)-- ",
+                "1 AND SLEEP(5)-- ",
+                "1) AND SLEEP(5)-- ",
+                "1 OR pg_sleep(5)--",
+                "1; SELECT pg_sleep(5)--",
+                "1' WAITFOR DELAY '0:0:5'--",
+            ]
+            for pay in time_payloads:
+                t0 = time.perf_counter();
+                rr = client.get(url, params={p: pay});
+                dt = time.perf_counter() - t0
+                if rr.status_code < 500 and dt > 4.0:
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="SQLインジェクションの可能性（時間差）",
+                            severity="高",
+                            evidence=f"タイムディレイ応答 {dt:.2f}s",
+                            reproduction_steps=[f"GET {url}?{p}={pay}", "応答遅延を確認"],
+                            category="A SQLi",
+                            test_type="能動的",
+                        )
+                    )
+                    break
+        except Exception:
+            pass
     # Open Redirect（安全な検査）
     if mode in (ScanMode.NORMAL, ScanMode.ATTACK):
         for pname in ("next", "redirect", "url", "return", "to"):
@@ -611,7 +641,8 @@ def _cmdi_tests(url: str, client: httpx.Client, mode: ScanMode, options: ScanOpt
                 newq = urlencode({k: v[0] for k, v in qs2.items()})
                 u2 = urlunparse((pr.scheme, pr.netloc, pr.path, pr.params, newq, pr.fragment))
                 try:
-                    r = client.get(u2)
+                    import time
+                    t0 = time.perf_counter(); r = client.get(u2); dt = time.perf_counter() - t0
                 except Exception:
                     continue
                 text = r.text.lower()
@@ -622,6 +653,18 @@ def _cmdi_tests(url: str, client: httpx.Client, mode: ScanMode, options: ScanOpt
                             severity="高",
                             evidence="シェルエラーの兆候",
                             reproduction_steps=[f"GET {u2}", "レスポンスにシェルエラーが含まれる"],
+                            category="D OSコマンドインジェクション",
+                            test_type="能動的",
+                        )
+                    )
+                    return findings
+                if dt > 4.0:
+                    findings.append(
+                        VulnerabilityFinding(
+                            name="OSコマンドインジェクションの可能性（時間差）",
+                            severity="高",
+                            evidence=f"タイムディレイ応答 {dt:.2f}s",
+                            reproduction_steps=[f"GET {u2}", "応答遅延を確認"],
                             category="D OSコマンドインジェクション",
                             test_type="能動的",
                         )
@@ -822,6 +865,24 @@ def scan_targets(
                         )
                 except Exception:
                     pass
+            # LLM所見（受動的）: HTMLから潜在的な問題の候補を抽出
+            try:
+                if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
+                    html = r.text
+                    notes = logic.assess_vulnerabilities(html, url, max_items=3)
+                    for it in notes:
+                        vulns[url].append(
+                            VulnerabilityFinding(
+                                name=it.get("name", "LLM所見"),
+                                severity=it.get("severity", "中"),
+                                evidence=it.get("reason", ""),
+                                reproduction_steps=["HTMLレビュー/静的所見（AI）"],
+                                category=it.get("category", "LLM所見"),
+                                test_type="受動的",
+                            )
+                        )
+            except Exception:
+                pass
             # IDORの可能性（GETの数値idパラメータ）
             try:
                 parsed = urlparse(url)

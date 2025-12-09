@@ -126,39 +126,54 @@ def export_pdf(result: ScanResult, path: str | Path, fields: dict | None = None)
         from reportlab.lib.pagesizes import A4
         from reportlab.pdfgen import canvas
         from reportlab.lib.units import mm
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     except Exception as e:
         raise RuntimeError("reportlabがインストールされていません") from e
     fields = fields or {"endpoint": True, "name": True, "severity": True, "evidence": True, "repro": True, "notes": True}
+    # 日本語フォントを登録（CIDフォント）。利用不可時は英語フォントにフォールバック。
+    try:
+        pdfmetrics.registerFont(UnicodeCIDFont('HeiseiKakuGo-W5'))
+        pdfmetrics.registerFont(UnicodeCIDFont('HeiseiMin-W3'))
+        JP_FONT = 'HeiseiKakuGo-W5'
+        JP_FONT_BOLD = 'HeiseiKakuGo-W5'
+    except Exception:
+        JP_FONT = 'Helvetica'
+        JP_FONT_BOLD = 'Helvetica-Bold'
+
     c = canvas.Canvas(str(path), pagesize=A4)
     width, height = A4
     margin = 15 * mm
     x = margin
     y = height - margin
-    def write_line(text: str, leading: float = 12.0, indent: float = 0.0):
+    def write_line(text: str, leading: float = 12.0, indent: float = 0.0, bold: bool = False):
         nonlocal y
         if y < margin:
             c.showPage()
             y = height - margin
+            # 新ページでもフォントを再設定
+            c.setFont(JP_FONT_BOLD if bold else JP_FONT, 10 if not bold else 11)
+        c.setFont(JP_FONT_BOLD if bold else JP_FONT, 10 if not bold else 11)
         c.drawString(x + indent, y, text)
         y -= leading
 
-    c.setFont("Helvetica-Bold", 14)
-    write_line("脆弱性診断レポート", 18)
-    c.setFont("Helvetica", 10)
+    c.setFont(JP_FONT_BOLD, 14)
+    write_line("脆弱性診断レポート", 18, 0, True)
+    c.setFont(JP_FONT, 10)
     write_line(f"対象: {result.target}")
     write_line(f"モード: {result.mode.value}")
     for endpoint, vulns in result.vulns_by_endpoint.items():
-        c.setFont("Helvetica-Bold", 12)
-        write_line(endpoint, 16)
+        c.setFont(JP_FONT_BOLD, 12)
+        write_line(endpoint, 16, 0, True)
         if not vulns:
-            c.setFont("Helvetica", 10)
+            c.setFont(JP_FONT, 10)
             write_line("問題は検出されませんでした", 12, 10)
             continue
         for v in vulns:
-            c.setFont("Helvetica-Bold", 11)
+            c.setFont(JP_FONT_BOLD, 11)
             if fields.get("name"):
-                write_line(f"脆弱性: {v.name}", 14, 10)
-            c.setFont("Helvetica", 10)
+                write_line(f"脆弱性: {v.name}", 14, 10, True)
+            c.setFont(JP_FONT, 10)
             if fields.get("severity"):
                 write_line(f"重要度: {v.severity}", 12, 12)
             if fields.get("evidence") and v.evidence:
@@ -264,8 +279,18 @@ def export_company_pdf(result: ScanResult, path: str | Path) -> None:
         from reportlab.lib.pagesizes import A4
         from reportlab.pdfgen import canvas
         from reportlab.lib.units import mm
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     except Exception as e:
         raise RuntimeError("reportlabがインストールされていません") from e
+    try:
+        pdfmetrics.registerFont(UnicodeCIDFont('HeiseiKakuGo-W5'))
+        pdfmetrics.registerFont(UnicodeCIDFont('HeiseiMin-W3'))
+        JP_FONT = 'HeiseiKakuGo-W5'
+        JP_FONT_BOLD = 'HeiseiKakuGo-W5'
+    except Exception:
+        JP_FONT = 'Helvetica'
+        JP_FONT_BOLD = 'Helvetica-Bold'
     c = canvas.Canvas(str(path), pagesize=A4)
     width, height = A4
     margin = 15 * mm
@@ -275,15 +300,13 @@ def export_company_pdf(result: ScanResult, path: str | Path) -> None:
         nonlocal y
         if y < margin:
             c.showPage(); y = height - margin
-        if bold:
-            c.setFont("Helvetica-Bold", 11)
-        else:
-            c.setFont("Helvetica", 10)
+            c.setFont(JP_FONT_BOLD if bold else JP_FONT, 10 if not bold else 11)
+        c.setFont(JP_FONT_BOLD if bold else JP_FONT, 10 if not bold else 11)
         c.drawString(x + indent, y, text)
         y -= leading
 
     idx = 1
-    c.setFont("Helvetica-Bold", 14); write_line("脆弱性診断レポート（指定形式）", 18)
+    c.setFont(JP_FONT_BOLD, 14); write_line("脆弱性診断レポート（指定形式）", 18)
     for endpoint, vulns in result.vulns_by_endpoint.items():
         for v in vulns:
             write_line(f"[{idx}] {v.name}", 16, 0, True)
