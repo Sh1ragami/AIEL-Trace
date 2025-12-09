@@ -1,0 +1,2 @@
+[console_scripts]
+mbsd-tool = mbsd_tool.main:main

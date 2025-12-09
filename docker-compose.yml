@@ -1,0 +1,19 @@
+version: "3.8"
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      - DISPLAY=${DISPLAY}
+      - OLLAMA_URL=${OLLAMA_URL-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL-llama3.1:latest}
+      - QT_X11_NO_MITSHM=1
+      - QTWEBENGINE_DISABLE_SANDBOX=1
+    volumes:
+      - ./:/app
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    network_mode: host
+    # On macOS/Windows, remove network_mode and rely on default networking.

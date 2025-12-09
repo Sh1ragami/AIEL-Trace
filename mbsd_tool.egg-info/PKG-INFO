@@ -1,0 +1,70 @@
+Metadata-Version: 2.4
+Name: mbsd-tool
+Version: 0.1.0
+Summary: Local GUI vulnerability scanner with AI agent (Ollama)
+Author-email: MBSD <dev@example.com>
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: PySide6>=6.7.0
+Requires-Dist: PySide6-Addons>=6.7.0
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: beautifulsoup4>=4.12.2
+Requires-Dist: lxml>=5.2.1
+Requires-Dist: pydantic>=2.9.2
+Requires-Dist: jinja2>=3.1.4
+Provides-Extra: dev
+Requires-Dist: pytest>=8.2.0; extra == "dev"
+Requires-Dist: pytest-qt>=4.4.0; extra == "dev"
+Requires-Dist: ruff>=0.6.9; extra == "dev"
+
+MBSD Tool — Local GUI Vulnerability Scanner (Python)
+
+Overview
+- Local desktop GUI app built with PySide6 (Qt).
+- Enumerates paths under a target domain, crawls internal links, and runs basic vulnerability checks.
+- Embeds a browser-like panel to reconstruct pages (HTML/CSS/JS) and show AI-driven interactions.
+- Uses a local Ollama model for AI logic to simulate manual testing flows.
+- Exports scan results to Markdown and JSON reports.
+
+Key Features
+- Target input → path enumeration (dictionary + crawl) with scope control.
+- Scan modes: Safe, Normal, Attack (increasing intrusiveness).
+- Agent Browser: Qt WebEngine view with animated cursor and scripted actions from AI.
+- Report export with vulnerability name, severity, evidence, and reproduction steps.
+
+Quick Start (Native)
+1) Prerequisites:
+   - Python 3.10+
+   - Ollama installed and running locally (default: http://localhost:11434)
+   - `pip install -e .`
+2) Run:
+   - `python -m mbsd_tool`
+
+Quick Start (Docker)
+- For Linux with X11 display sharing:
+  1) `docker compose up --build`
+  2) Allow X access: `xhost +local:` (and revoke later with `xhost -local:`)
+  3) The app window displays on the host X server.
+
+  Note: For macOS/Windows, X11 display requires XQuartz (macOS) or an X server (Windows). Alternatively, use the `novnc` service variant (to be enabled later) to view the GUI in a browser.
+
+Directory Layout
+- `mbsd_tool/` — App package
+  - `gui/` — Qt GUI, tabs, web panel, styles
+  - `core/` — Crawler, scanner, agent, report, models
+  - `config/` — Settings and constants
+  - `resources/` — Icons and styles (QSS)
+- `docker/` — Dockerfile(s) and helper scripts
+
+Current Status
+- Minimal working GUI with tabs
+- Basic path enumeration (wordlist + crawl)
+- Basic passive checks (headers, TLS, status anomalies)
+- Agent browser stub + Ollama integration (safe fallbacks if Ollama unreachable)
+- Markdown/JSON export
+
+Roadmap
+- Expand active tests per mode, plugin-style scanner architecture
+- Add login workflows, session management, and form-filling strategies
+- Enable noVNC-based container UX for macOS/Windows users
+
