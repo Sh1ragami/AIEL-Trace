@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QTextEdit,
     QAbstractItemView,
+    QMessageBox,
 )
 from PySide6.QtGui import QColor, QBrush
 
@@ -171,7 +172,7 @@ class ResultsPanel(QWidget):
         if not path:
             return
         try:
-            # 既定は指定形式にマップ
+            from mbsd_tool.core.report import export_report
             key_map = {
                 "Markdown": "company_markdown",
                 "HTML": "company_html",
@@ -182,7 +183,12 @@ class ResultsPanel(QWidget):
             export_report(self._latest, path, key_map.get(fmt, fmt.lower()), None)
             self.status_label.setText(f"保存しました: {path}")
         except Exception as e:
-            self.status_label.setText(f"エクスポートエラー: {e}")
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Critical)
+            msg_box.setWindowTitle("エクスポートエラー")
+            msg_box.setText("レポートのエクスポート中にエラーが発生しました。")
+            msg_box.setInformativeText(str(e))
+            msg_box.exec()
 
     def _populate_details(self, filter_key: tuple | None = None) -> None:
         if not self._latest:

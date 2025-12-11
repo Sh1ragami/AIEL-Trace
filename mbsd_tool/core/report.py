@@ -186,17 +186,15 @@ def export_aiel_pdf(result: ScanResult, path: str | Path) -> None:
         from reportlab.pdfbase.cidfonts import UnicodeCIDFont
         from reportlab.lib.colors import Color
     except Exception as e:
-        raise RuntimeError("reportlabがインストールされていません") from e
+        raise RuntimeError("reportlabがインストールされていません。'pip install reportlab' を実行してください。") from e
 
     # フォント
     try:
         pdfmetrics.registerFont(UnicodeCIDFont('HeiseiKakuGo-W5'))
-        pdfmetrics.registerFont(UnicodeCIDFont('HeiseiMin-W3'))
         JP_FONT = 'HeiseiKakuGo-W5'
         JP_FONT_BOLD = 'HeiseiKakuGo-W5'
-    except Exception:
-        JP_FONT = 'Helvetica'
-        JP_FONT_BOLD = 'Helvetica-Bold'
+    except Exception as e:
+        raise RuntimeError("PDF生成に必要な日本語フォント（平成角ゴシック）が見つかりません。") from e
 
     c = canvas.Canvas(str(path), pagesize=A4)
     width, height = A4
@@ -484,15 +482,13 @@ def export_company_pdf(result: ScanResult, path: str | Path) -> None:
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     except Exception as e:
-        raise RuntimeError("reportlabがインストールされていません") from e
+        raise RuntimeError("reportlabがインストールされていません。'pip install reportlab' を実行してください。") from e
     try:
         pdfmetrics.registerFont(UnicodeCIDFont('HeiseiKakuGo-W5'))
-        pdfmetrics.registerFont(UnicodeCIDFont('HeiseiMin-W3'))
         JP_FONT = 'HeiseiKakuGo-W5'
         JP_FONT_BOLD = 'HeiseiKakuGo-W5'
-    except Exception:
-        JP_FONT = 'Helvetica'
-        JP_FONT_BOLD = 'Helvetica-Bold'
+    except Exception as e:
+        raise RuntimeError("PDF生成に必要な日本語フォント（平成角ゴシック）が見つかりません。") from e
     c = canvas.Canvas(str(path), pagesize=A4)
     width, height = A4
     margin = 15 * mm
