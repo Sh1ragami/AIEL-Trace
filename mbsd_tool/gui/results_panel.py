@@ -83,6 +83,7 @@ class ResultsPanel(QWidget):
         self.summary.setAlternatingRowColors(True)
         self.summary.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
+        # Details table (adds 状態 when baseline loaded)
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["エンドポイント", "脆弱性", "重要度", "カテゴリ", "検査タイプ"])
         self.table.setAlternatingRowColors(True)
@@ -101,10 +102,29 @@ class ResultsPanel(QWidget):
         export_bar.addStretch(1)
         export_bar.addWidget(export_btn)
 
+        # Baseline compare controls
+        self._baseline: dict | None = None
+        self._diff: dict | None = None
+        base_bar = QHBoxLayout()
+        self.btn_save_baseline = QPushButton("比較用ファイル保存(JSON)")
+        self.btn_load_baseline = QPushButton("前回ファイル読込")
+        self.btn_list_fixed = QPushButton("修正済み一覧…")
+        self.btn_list_fixed.setEnabled(False)
+        self._diff_label = QLabel("")
+        self.btn_save_baseline.clicked.connect(self._on_save_baseline)
+        self.btn_load_baseline.clicked.connect(self._on_load_baseline)
+        self.btn_list_fixed.clicked.connect(self._on_show_fixed)
+        base_bar.addWidget(self.btn_save_baseline)
+        base_bar.addWidget(self.btn_load_baseline)
+        base_bar.addWidget(self.btn_list_fixed)
+        base_bar.addStretch(1)
+        base_bar.addWidget(self._diff_label)
+
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.addWidget(self._mk_header("結果"))
         layout.addLayout(export_bar)
+        layout.addLayout(base_bar)
         # Charts are removed; show severity bar instead
         layout.addWidget(self.severity_bar)
         layout.addWidget(self._mk_header("サマリー"))
@@ -117,6 +137,7 @@ class ResultsPanel(QWidget):
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.addWidget(scroll)
 
         self._latest: ScanResult | None = None
+        self._has_status_column = False
 
     def _mk_header(self, text: str, _sp: object | None = None) -> QWidget:
         w = QWidget()
@@ -131,6 +152,9 @@ class ResultsPanel(QWidget):
 
     def update_results(self, result: ScanResult) -> None:
         self._latest = result
+        # If baseline loaded, compute diff
+        if self._baseline is not None:
+            self._compute_diff()
         # サマリー
         counts = {}
         for endpoint, vulns in result.vulns_by_endpoint.items():
@@ -193,6 +217,17 @@ class ResultsPanel(QWidget):
     def _populate_details(self, filter_key: tuple | None = None) -> None:
         if not self._latest:
             return
+        # Ensure status column exists if baseline loaded
+        want_status = self._baseline is not None
+        if want_status and not self._has_status_column:
+            self.table.setColumnCount(6)
+            self.table.setHorizontalHeaderLabels(["エンドポイント", "脆弱性", "重要度", "カテゴリ", "検査タイプ", "状態"])
+            self._has_status_column = True
+        if not want_status and self._has_status_column:
+            self.table.setColumnCount(5)
+            self.table.setHorizontalHeaderLabels(["エンドポイント", "脆弱性", "重要度", "カテゴリ", "検査タイプ"])
+            self._has_status_column = False
+
         rows = 0
         self._detail_rows: list[tuple[str, object]] = []
         for endpoint, vulns in self._latest.vulns_by_endpoint.items():
@@ -202,6 +237,12 @@ class ResultsPanel(QWidget):
                 rows += 1
         self.table.setRowCount(rows)
         r = 0
+        diff_status = {}
+        if self._diff is not None:
+            for it in self._diff.get("new", []):
+                diff_status[it["key"]] = "新規"
+            for it in self._diff.get("unresolved", []):
+                diff_status[it["key"]] = "未解決"
         for endpoint, vulns in self._latest.vulns_by_endpoint.items():
             for v in vulns:
                 if filter_key and (v.name, v.severity) != filter_key:
@@ -211,6 +252,15 @@ class ResultsPanel(QWidget):
                 self.table.setItem(r, 2, self._sev_item(v.severity))
                 self.table.setItem(r, 3, QTableWidgetItem(v.category or ""))
                 self.table.setItem(r, 4, QTableWidgetItem(v.test_type or ""))
+                if self._baseline is not None:
+                    # status column
+                    try:
+                        from mbsd_tool.core.baseline import _finding_key  # type: ignore
+                        k = _finding_key(endpoint, v)
+                        st = diff_status.get(k, "")
+                        self.table.setItem(r, 5, QTableWidgetItem(st))
+                    except Exception:
+                        self.table.setItem(r, 5, QTableWidgetItem(""))
                 # keep reference to the underlying finding for detail view
                 self._detail_rows.append((endpoint, v))
                 r += 1
@@ -313,3 +363,76 @@ class ResultsPanel(QWidget):
         item.setForeground(QBrush(QColor('#ffffff')))
         item.setBackground(QBrush(c))
         return item
+
+    # --- Baseline handlers ---
+    def _on_save_baseline(self) -> None:
+        if not self._latest:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "比較用ファイルを保存", "baseline.json", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            from mbsd_tool.core.baseline import save_baseline
+            save_baseline(self._latest, path)
+            self.status_label.setText(f"比較用ファイルを保存しました: {path}")
+        except Exception as e:
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Critical)
+            msg_box.setWindowTitle("保存エラー")
+            msg_box.setText("比較用ファイルの保存に失敗しました。")
+            msg_box.setInformativeText(str(e))
+            msg_box.exec()
+
+    def _on_load_baseline(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "前回の比較用ファイルを読み込む", "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            from mbsd_tool.core.baseline import load_baseline
+            self._baseline = load_baseline(path)
+            if self._latest is not None:
+                self._compute_diff()
+                self._populate_details()
+                self.status_label.setText("前回ファイルを読み込み、差分を表示しました。")
+            else:
+                self.status_label.setText("前回ファイルを読み込みました。次回のスキャン結果で差分表示します。")
+        except Exception as e:
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Critical)
+            msg_box.setWindowTitle("読み込みエラー")
+            msg_box.setText("比較用ファイルの読み込みに失敗しました。")
+            msg_box.setInformativeText(str(e))
+            msg_box.exec()
+
+    def _compute_diff(self) -> None:
+        if self._baseline is None or self._latest is None:
+            self._diff = None
+            self._diff_label.setText("")
+            self.btn_list_fixed.setEnabled(False)
+            return
+        from mbsd_tool.core.baseline import diff_against_baseline
+        self._diff = diff_against_baseline(self._baseline, self._latest)
+        sm = self._diff.get("summary", {}) if isinstance(self._diff, dict) else {}
+        self._diff_label.setText(f"新規: {sm.get('new',0)}  未解決: {sm.get('unresolved',0)}  修正済: {sm.get('fixed',0)}")
+        self.btn_list_fixed.setEnabled((sm.get('fixed', 0) or 0) > 0)
+
+    def _on_show_fixed(self) -> None:
+        if not self._diff:
+            return
+        fixed = self._diff.get("fixed", [])
+        dlg = QDialog(self)
+        dlg.setWindowTitle("修正済みの脆弱性")
+        v = QVBoxLayout(dlg)
+        table = QTableWidget(len(fixed), 2)
+        table.setHorizontalHeaderLabels(["エンドポイント", "脆弱性"])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        for i, it in enumerate(fixed):
+            table.setItem(i, 0, QTableWidgetItem(it.get("endpoint") or ""))
+            table.setItem(i, 1, QTableWidgetItem(it.get("name") or ""))
+        v.addWidget(table)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok)
+        btns.accepted.connect(dlg.accept)
+        v.addWidget(btns)
+        dlg.resize(600, 400)
+        dlg.exec()

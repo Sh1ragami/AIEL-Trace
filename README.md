@@ -12,6 +12,7 @@ Key Features
 - Scan modes: Safe, Normal, Attack (increasing intrusiveness).
 - Agent Browser: Qt WebEngine view with animated cursor and scripted actions from AI.
 - Report export with vulnerability name, severity, evidence, and reproduction steps.
+ - Baseline diff: save a JSON baseline after a scan and later load it to see New / Unresolved / Fixed findings.
 
 Quick Start (Native)
 1) Prerequisites:
@@ -43,9 +44,15 @@ Current Status
 - Basic passive checks (headers, TLS, status anomalies)
 - Agent browser stub + Ollama integration (safe fallbacks if Ollama unreachable)
 - Markdown/JSON export
+ - Baseline comparison UI in Results tab (import/export JSON)
+
+Change Tracking (Baseline Diff)
+- After a scan, open the Results/Report tab and click "比較用ファイル保存(JSON)" to save a baseline file.
+- On a subsequent scan of the same target, click "前回ファイル読込" to load the previous baseline.
+- The details table then shows a 状態 column marking each current finding as 新規 or 未解決; a separate dialog lists 修正済み.
+- Baseline files are plain JSON. You can also load a previously exported JSON ScanResult; it will be converted automatically.
 
 Roadmap
 - Expand active tests per mode, plugin-style scanner architecture
 - Add login workflows, session management, and form-filling strategies
 - Enable noVNC-based container UX for macOS/Windows users
-
