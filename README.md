@@ -1,58 +1,141 @@
-MBSD Tool — Local GUI Vulnerability Scanner (Python)
 
-Overview
-- Local desktop GUI app built with PySide6 (Qt).
-- Enumerates paths under a target domain, crawls internal links, and runs basic vulnerability checks.
-- Embeds a browser-like panel to reconstruct pages (HTML/CSS/JS) and show AI-driven interactions.
-- Uses a local Ollama model for AI logic to simulate manual testing flows.
-- Exports scan results to Markdown and JSON reports.
+<img width="1135" height="387" alt="AIEL Trace" src="https://github.com/user-attachments/assets/9763d537-0a75-4467-940a-2a929da87921" />
 
-Key Features
-- Target input → path enumeration (dictionary + crawl) with scope control.
-- Scan modes: Safe, Normal, Attack (increasing intrusiveness).
-- Agent Browser: Qt WebEngine view with animated cursor and scripted actions from AI.
-- Report export with vulnerability name, severity, evidence, and reproduction steps.
- - Baseline diff: save a JSON baseline after a scan and later load it to see New / Unresolved / Fixed findings.
+<p align="center">
+  <a href="https://www.python.org/">
+    <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python">
+  </a>
+  <a href="https://github.com/astral-sh/ruff">
+    <img src="https://img.shields.io/badge/lint-ruff-46a2f1" alt="Ruff">
+  </a>
+  <a href="https://github.com/Sh1ragami/AIEL-Trace/issues">
+    <img src="https://img.shields.io/github/issues/Sh1ragami/AIEL-Trace" alt="Issues">
+  </a>
+  <a href="https://github.com/Sh1ragami/AIEL-Trace/commits/main">
+    <img src="https://img.shields.io/github/last-commit/Sh1ragami/AIEL-Trace" alt="Last Commit">
+  </a>
+  <a href="https://github.com/Sh1ragami/AIEL-Trace">
+    <img src="https://img.shields.io/github/stars/Sh1ragami/AIEL-Trace?style=social" alt="Stars">
+  </a>
+</p>
 
-Quick Start (Native)
-1) Prerequisites:
-   - Python 3.10+
-   - Ollama installed and running locally (default: http://localhost:11434)
-   - `pip install -e .`
-2) Run:
-   - `python -m mbsd_tool`
+<br/>
 
-Quick Start (Docker)
-- For Linux with X11 display sharing:
+## 概要
+- PySide6（Qt）製のローカルデスクトップGUI脆弱性スキャナです。MBSD2025のコンテスト用に開発しました。
+
+<br/>
+
+## 主な特徴（Features）
+- スキャンモード: セーフ / 通常 / 攻撃（侵襲度を段階制御）
+- パス列挙: 既知パスの辞書照合＋同一オリジン内リンクのクロール
+- 受動チェック例: セキュリティヘッダ不足、ディレクトリリスティング、情報漏えい、CORS/HSTS/Cookie属性、デバッグ残存 など
+- 能動チェック例: HTTPS適用漏れ、CORS反射、パラメータ改ざん、テンプレートインジェクション兆候、SSRFの可能性、HTTPメソッド/XST など
+- 攻撃モード例: CRLF/ヘッダインジェクション、OSコマンドインジェクション（時間差/エラー）、ディレクトリトラバーサル、ファイルアップロード など（オプトイン）
+- XSS系: DOMシンク観測、DOM反射/格納型の簡易検知（自動フォーム投入）
+- 認証支援: 簡易ログイン試行、AIへ認証情報を共有（任意）
+- ベースライン比較: JSONを取り込み、新規/未解決/修正済みをUI表示
+- レポート出力: Markdown/HTML/PDF/DOCX（AIEL）/JSON
+
+<br/>
+
+## スクリーンショット
+
+<table>
+  <tr>
+    <td align="center">
+      <h4>パス列挙</h4>
+      <img src="https://github.com/user-attachments/assets/c703e931-6f25-46ff-8035-7d959ca01d06" width="720" alt="Dashboard">
+    </td>
+    <td align="center">
+      <h4>画面プレビュー</h4>
+      <img src="https://github.com/user-attachments/assets/bcb91e8e-f9a5-4e45-aa37-bf66b00caec4" width="720" alt="Target Setup">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <h4>ソースコードプレビュー</h4>
+      <img src="https://github.com/user-attachments/assets/ef59cdb3-461f-4065-9087-26c7c9f2711d" width="720" alt="Endpoint Enumeration">
+    </td>
+    <td align="center">
+      <h4>スキャンオプション設定</h4>
+      <img src="https://github.com/user-attachments/assets/afae562e-34d8-4cda-abe6-409bac66d19b" width="720" alt="Scan Results">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <h4>スキャン結果一覧</h4>
+      <img src="https://github.com/user-attachments/assets/a40da48f-d11a-4702-be29-63bc8bf1a761" width="720" alt="AI Agent Browser">
+    </td>
+    <td align="center">
+      <h4>スキャン結果詳細</h4>
+      <img src="https://github.com/user-attachments/assets/00f2371f-ffdc-4a36-b26f-09c631ae500d" width="720" alt="Report & Export">
+    </td>
+  </tr>
+</table>
+
+<br/>
+
+## インストール（Native）
+前提:
+- Python 3.10+
+- Ollama（デフォルト: http://localhost:11434）。モデル例: `llama3.1:latest`
+
+手順:
+- 仮想環境を推奨（例: `python -m venv .venv && source .venv/bin/activate`）
+- 依存インストール: `pip install -e .`（開発向け: `pip install -e .[dev]`）
+- モデル準備（例）: `ollama pull llama3.1`
+- 実行:
+  - GUIを起動: `mbsd-tool` または `python -m mbsd_tool`
+
+## インストール（Docker）
+- Linux + X11 共有例:
   1) `docker compose up --build`
-  2) Allow X access: `xhost +local:` (and revoke later with `xhost -local:`)
-  3) The app window displays on the host X server.
+  2) X11許可: `xhost +local:`（終了後は `xhost -local:` で戻す）
+  3) ホストのXサーバにウィンドウが表示されます
 
-  Note: For macOS/Windows, X11 display requires XQuartz (macOS) or an X server (Windows). Alternatively, use the `novnc` service variant (to be enabled later) to view the GUI in a browser.
+注意: macOS/WindowsでX11表示にはXQuartz（macOS）やXサーバ（Windows）が必要です。将来的にnoVNC経由のブラウザ表示も提供予定です。
 
-Directory Layout
-- `mbsd_tool/` — App package
-  - `gui/` — Qt GUI, tabs, web panel, styles
-  - `core/` — Crawler, scanner, agent, report, models
-  - `config/` — Settings and constants
-  - `resources/` — Icons and styles (QSS)
-- `docker/` — Dockerfile(s) and helper scripts
+<br/>
 
-Current Status
-- Minimal working GUI with tabs
-- Basic path enumeration (wordlist + crawl)
-- Basic passive checks (headers, TLS, status anomalies)
-- Agent browser stub + Ollama integration (safe fallbacks if Ollama unreachable)
-- Markdown/JSON export
- - Baseline comparison UI in Results tab (import/export JSON)
+## 使い方
+1) ターゲットURLを入力（例: `http://localhost/`）
+2) モードを選択（セーフ/通常/攻撃）
+3) 「パス列挙」→ 表示されたエンドポイントを確認し「エンドポイントをスキャン」
+4) 右側のエージェントブラウザでAI操作やDOM観測結果を確認
+5) 結果/レポートタブからエクスポート（Markdown/HTML/PDF/DOCX/JSON）
 
-Change Tracking (Baseline Diff)
-- After a scan, open the Results/Report tab and click "比較用ファイル保存(JSON)" to save a baseline file.
-- On a subsequent scan of the same target, click "前回ファイル読込" to load the previous baseline.
-- The details table then shows a 状態 column marking each current finding as 新規 or 未解決; a separate dialog lists 修正済み.
-- Baseline files are plain JSON. You can also load a previously exported JSON ScanResult; it will be converted automatically.
+ベースライン比較（差分トラッキング）
+- スキャン後に「比較用ファイル保存(JSON)」でベースラインを保存
+- 次回スキャン時に「前回ファイル読込」で読み込むと、詳細表に「状態（新規/未解決）」を表示。別ダイアログで「修正済み」を確認
+- 既存のScanResult（JSON）も自動変換して比較可能
 
-Roadmap
-- Expand active tests per mode, plugin-style scanner architecture
-- Add login workflows, session management, and form-filling strategies
-- Enable noVNC-based container UX for macOS/Windows users
+環境変数・設定
+- `OLLAMA_URL`（既定: `http://localhost:11434`）
+- `OLLAMA_MODEL`（既定: `llama3.1:latest`）
+
+CLI
+- エントリポイント: `mbsd-tool`
+- モジュールから: `python -m mbsd_tool`
+
+<br/>
+
+## 安全な利用について
+- 本ツールは、利用者が権限を有するシステムに対してのみ使用してください。
+- 攻撃モードは侵襲的な検査を含みます。業務・法令・契約・社内規程に従い、関係者の合意を得た上で実施してください。
+- 実運用環境での試験は推奨しません。検証環境での利用をご検討ください。
+
+<br/>
+
+## ディレクトリ構成
+- `mbsd_tool/`
+  - `gui/` — Qt GUI（タブ、Webパネル、テーマ）
+  - `core/` — 列挙/スキャナ/AIエージェント/レポート/モデル
+  - `config/` — 設定（OllamaのURL/モデル）
+  - `resources/` — アイコン/QSS等
+- `docker/` — Dockerfileや補助スクリプト
+
+<br/>
+
+## ライセンス
+- MIT LICENCE
