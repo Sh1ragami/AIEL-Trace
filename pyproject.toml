@@ -31,4 +31,4 @@ dev = [
 mbsd-tool = "mbsd_tool.main:main"
 
 [tool.setuptools]
-packages = ["mbsd_tool", "mbsd_tool.gui", "mbsd_tool.core", "mbsd_tool.config", "mbsd_tool.resources"]
+packages = ["mbsd_tool", "mbsd_tool.gui", "mbsd_tool.core", "mbsd_tool.config"]
